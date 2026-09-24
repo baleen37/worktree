@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 
 use crate::git::RepoContext;
+use crate::picker;
+use crate::shell::{self, Shell};
 use crate::worktree::{PruneOptions, WorktreeInfo, create_branch, prune, remove, switch_existing};
 
 #[derive(Debug, Parser)]
@@ -40,8 +42,21 @@ enum Commands {
 
 #[derive(Debug, Subcommand)]
 enum ConfigCommands {
-    /// Print shell integration instructions.
-    Shell,
+    /// Manage shell integration.
+    Shell {
+        #[command(subcommand)]
+        command: ShellCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ShellCommands {
+    /// Print a shell wrapper.
+    Init { shell: Shell },
+    /// Install shell startup blocks.
+    Install,
+    /// Remove shell startup blocks.
+    Uninstall,
 }
 
 pub fn run() -> anyhow::Result<()> {
@@ -58,12 +73,17 @@ pub fn run() -> anyhow::Result<()> {
                 if branch.is_some() {
                     anyhow::bail!("branch cannot be provided separately from -c");
                 }
-                create_branch(&repo, name.as_deref(), shell_path_file.as_deref())?
+                Some(create_branch(
+                    &repo,
+                    name.as_deref(),
+                    shell_path_file.as_deref(),
+                )?)
+            } else if let Some(branch) = branch {
+                Some(switch_existing(&repo, &branch, shell_path_file.as_deref())?)
             } else {
-                let branch = branch.ok_or_else(|| anyhow::anyhow!("branch is required"))?;
-                switch_existing(&repo, &branch, shell_path_file.as_deref())?
+                picker::select(&repo, shell_path_file.as_deref())?
             };
-            if shell_path_file.is_none() {
+            if let Some(path) = path.filter(|_| shell_path_file.is_none()) {
                 println!("{}", path.display());
             }
         }
@@ -84,7 +104,13 @@ pub fn run() -> anyhow::Result<()> {
             let repo = RepoContext::discover(&std::env::current_dir()?)?;
             prune(&repo, PruneOptions { stale, yes })?;
         }
-        _ => {}
+        Commands::Config { command } => match command {
+            ConfigCommands::Shell { command } => match command {
+                ShellCommands::Init { shell } => print!("{}", shell::init(shell)),
+                ShellCommands::Install => shell::install()?,
+                ShellCommands::Uninstall => shell::uninstall()?,
+            },
+        },
     }
     Ok(())
 }

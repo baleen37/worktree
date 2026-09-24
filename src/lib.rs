@@ -1,5 +1,6 @@
 mod cli;
 pub mod git;
+mod picker;
 mod shell;
 pub mod worktree;
 

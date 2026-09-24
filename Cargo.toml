@@ -13,6 +13,7 @@ path = "src/main.rs"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 console = "0.16"
+dialoguer = { version = "0.12", features = ["fuzzy-select"] }
 
 [dev-dependencies]
 assert_cmd = "2"
