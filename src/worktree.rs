@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 
@@ -26,6 +26,147 @@ impl WorktreeInfo {
         }
         Ok(entries)
     }
+}
+
+pub struct PruneOptions {
+    pub stale: bool,
+    pub yes: bool,
+}
+
+pub struct PruneOutcome {
+    pub safe: usize,
+    pub stale: usize,
+    pub keep: usize,
+    pub candidates: Vec<PathBuf>,
+    pub removed: Vec<PathBuf>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PruneClass {
+    Safe,
+    Stale,
+    Keep,
+}
+
+fn merged_into_base(repo: &RepoContext, branch: &str) -> Result<bool> {
+    let branch_ref = format!("refs/heads/{branch}");
+    let base_ref = format!("refs/heads/{}", repo.base_branch);
+    let output = std::process::Command::new("git")
+        .current_dir(&repo.primary_root)
+        .args(["merge-base", "--is-ancestor", &branch_ref, &base_ref])
+        .output()
+        .with_context(|| format!("could not check whether {branch} is merged"))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => bail!(
+            "git merge-base --is-ancestor failed for {branch}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+    }
+}
+
+fn classify(repo: &RepoContext, entry: &WorktreeInfo) -> Result<PruneClass> {
+    if entry.is_primary || entry.is_current || entry.branch.as_deref() == Some(&repo.base_branch) {
+        return Ok(PruneClass::Keep);
+    }
+    let Some(branch) = entry.branch.as_deref() else {
+        return Ok(PruneClass::Keep);
+    };
+    if !git_text(
+        &entry.path,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )?
+    .is_empty()
+    {
+        return Ok(PruneClass::Keep);
+    }
+    if merged_into_base(repo, branch)? {
+        return Ok(PruneClass::Safe);
+    }
+    let age = SystemTime::now()
+        .duration_since(std::fs::metadata(&entry.path)?.modified()?)
+        .unwrap_or_default();
+    if age >= Duration::from_secs(30 * 24 * 60 * 60) {
+        Ok(PruneClass::Stale)
+    } else {
+        Ok(PruneClass::Keep)
+    }
+}
+
+fn preview(repo: &RepoContext, options: &PruneOptions) -> Result<PruneOutcome> {
+    let entries = WorktreeInfo::list(repo)?;
+    let classes = entries
+        .iter()
+        .map(|entry| classify(repo, entry))
+        .collect::<Result<Vec<_>>>()?;
+    let mut candidates = Vec::new();
+    let mut safe = 0;
+    let mut stale = 0;
+    let mut keep = 0;
+    for (entry, class) in entries.iter().zip(&classes) {
+        let eligible = *class == PruneClass::Safe || (*class == PruneClass::Stale && options.stale);
+        let contains_preserved = entries.iter().zip(&classes).any(|(other, other_class)| {
+            other.path != entry.path
+                && other.path.starts_with(&entry.path)
+                && (*other_class == PruneClass::Keep
+                    || (*other_class == PruneClass::Stale && !options.stale))
+        });
+        if !eligible || contains_preserved {
+            keep += 1;
+        } else {
+            match class {
+                PruneClass::Safe => safe += 1,
+                PruneClass::Stale => stale += 1,
+                PruneClass::Keep => unreachable!(),
+            }
+            candidates.push(entry.path.clone());
+        }
+    }
+    candidates.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    Ok(PruneOutcome {
+        safe,
+        stale,
+        keep,
+        candidates,
+        removed: Vec::new(),
+    })
+}
+
+pub fn prune(repo: &RepoContext, options: PruneOptions) -> Result<PruneOutcome> {
+    let mut outcome = preview(repo, &options)?;
+    println!("safe: {}", outcome.safe);
+    println!("stale: {}", outcome.stale);
+    println!("keep: {}", outcome.keep);
+    for path in &outcome.candidates {
+        println!("remove: {}", path.display());
+    }
+    if outcome.candidates.is_empty() {
+        return Ok(outcome);
+    }
+    if !options.yes {
+        let term = console::Term::stdout();
+        if !term.is_term() {
+            println!("dry run");
+            return Ok(outcome);
+        }
+        term.write_str("Apply? [y/N] ")?;
+        if !matches!(term.read_char()?, 'y' | 'Y') {
+            println!("cancelled");
+            return Ok(outcome);
+        }
+        println!();
+    }
+    // Re-evaluate the whole repository after confirmation and before every removal.
+    for path in outcome.candidates.clone() {
+        if !preview(repo, &options)?.candidates.contains(&path) {
+            continue;
+        }
+        let target = path.to_str().context("worktree path is not UTF-8")?;
+        git_text(&repo.primary_root, &["worktree", "remove", "--", target])?;
+        outcome.removed.push(path);
+    }
+    Ok(outcome)
 }
 
 pub fn remove(
@@ -289,6 +430,29 @@ fn choose_random_name(repo: &RepoContext, generate: &mut impl FnMut() -> String)
     bail!("could not find an unused worktree name after 5 attempts")
 }
 
+pub(crate) fn parse_porcelain(text: &str) -> Result<Vec<WorktreeInfo>> {
+    text.split("\n\n")
+        .filter(|block| !block.is_empty())
+        .map(|block| {
+            let mut path = None;
+            let mut branch = None;
+            for line in block.lines() {
+                if let Some(value) = line.strip_prefix("worktree ") {
+                    path = Some(PathBuf::from(value));
+                } else if let Some(value) = line.strip_prefix("branch refs/heads/") {
+                    branch = Some(value.to_owned());
+                }
+            }
+            Ok(WorktreeInfo {
+                path: path.context("Git worktree entry has no path")?,
+                branch,
+                is_primary: false,
+                is_current: false,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,27 +509,4 @@ mod tests {
                 .is_empty()
         );
     }
-}
-
-pub(crate) fn parse_porcelain(text: &str) -> Result<Vec<WorktreeInfo>> {
-    text.split("\n\n")
-        .filter(|block| !block.is_empty())
-        .map(|block| {
-            let mut path = None;
-            let mut branch = None;
-            for line in block.lines() {
-                if let Some(value) = line.strip_prefix("worktree ") {
-                    path = Some(PathBuf::from(value));
-                } else if let Some(value) = line.strip_prefix("branch refs/heads/") {
-                    branch = Some(value.to_owned());
-                }
-            }
-            Ok(WorktreeInfo {
-                path: path.context("Git worktree entry has no path")?,
-                branch,
-                is_primary: false,
-                is_current: false,
-            })
-        })
-        .collect()
 }

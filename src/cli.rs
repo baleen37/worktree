@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use crate::git::RepoContext;
-use crate::worktree::{WorktreeInfo, create_branch, remove, switch_existing};
+use crate::worktree::{PruneOptions, WorktreeInfo, create_branch, prune, remove, switch_existing};
 
 #[derive(Debug, Parser)]
 #[command(name = "wt", version, about = "Git worktree manager written in Rust")]
@@ -22,8 +22,15 @@ enum Commands {
     List,
     /// Remove a worktree.
     Remove { target: Option<String> },
-    /// Prune stale worktree metadata.
-    Prune,
+    /// Preview and remove eligible worktrees.
+    Prune {
+        /// Include clean unmerged worktrees older than 30 days.
+        #[arg(long)]
+        stale: bool,
+        /// Remove without confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Manage shell integration.
     Config {
         #[command(subcommand)]
@@ -72,6 +79,10 @@ pub fn run() -> anyhow::Result<()> {
             let shell_path_file =
                 std::env::var_os("WT_SHELL_PATH_FILE").map(std::path::PathBuf::from);
             remove(&repo, target.as_deref(), shell_path_file.as_deref())?;
+        }
+        Commands::Prune { stale, yes } => {
+            let repo = RepoContext::discover(&std::env::current_dir()?)?;
+            prune(&repo, PruneOptions { stale, yes })?;
         }
         _ => {}
     }
