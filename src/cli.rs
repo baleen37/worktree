@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
 
+use crate::git::RepoContext;
+use crate::worktree::WorktreeInfo;
+
 #[derive(Debug, Parser)]
 #[command(name = "wt", version, about = "Git worktree manager written in Rust")]
 struct Cli {
@@ -32,6 +35,15 @@ enum ConfigCommands {
 
 pub fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let _command = cli.command.unwrap_or(Commands::Switch);
+    match cli.command.unwrap_or(Commands::Switch) {
+        Commands::List => {
+            let repo = RepoContext::discover(&std::env::current_dir()?)?;
+            for entry in WorktreeInfo::list(&repo)? {
+                let branch = entry.branch.as_deref().unwrap_or("(detached HEAD)");
+                println!("{}  {branch}", entry.path.display());
+            }
+        }
+        _ => {}
+    }
     Ok(())
 }
