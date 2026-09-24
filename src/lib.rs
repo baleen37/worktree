@@ -1,5 +1,6 @@
 mod cli;
 pub mod git;
+mod shell;
 pub mod worktree;
 
 pub fn run() -> anyhow::Result<()> {
