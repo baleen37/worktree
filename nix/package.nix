@@ -1,4 +1,4 @@
-{ bash, coreutils, fish, gitMinimal, lib, rustPlatform, systems, zsh }:
+{ bash, coreutils, fish, gitMinimal, lib, makeWrapper, rustPlatform, systems, zsh }:
 
 let
   cargoToml = builtins.fromTOML (builtins.readFile ../Cargo.toml);
@@ -11,6 +11,7 @@ rustPlatform.buildRustPackage {
   version = cargoToml.package.version;
   src = ../.;
   cargoLock.lockFile = ../Cargo.lock;
+  nativeBuildInputs = [ makeWrapper ];
   nativeCheckInputs = [ bash coreutils fish gitMinimal zsh ];
 
   preBuild = remapBuildPath;
@@ -19,6 +20,10 @@ rustPlatform.buildRustPackage {
     ${remapBuildPath}
     # Nix-Darwin's global zshenv otherwise replaces PATH in shell integration tests.
     export __NIX_DARWIN_SET_ENVIRONMENT_DONE=1
+  '';
+
+  postInstall = ''
+    wrapProgram "$out/bin/wt" --prefix PATH : ${lib.makeBinPath [ gitMinimal ]}
   '';
 
   meta = {
