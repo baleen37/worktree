@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 
 const START: &str = "# >>> wt shell integration >>>";
 const END: &str = "# <<< wt shell integration <<<";
+const ADDED_SEPARATOR: &str = "# wt shell integration: added separator newline";
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub(crate) enum Shell {
@@ -40,11 +41,14 @@ fn rc_files() -> Result<[(PathBuf, &'static str); 3]> {
 fn without_managed_block(text: &str) -> Result<String> {
     let mut output = text.to_owned();
     while let Some(start) = output.find(START) {
-        let block_start = if start > 0 && output.as_bytes()[start - 1] == b'\n' {
-            start - 1
-        } else {
-            start
-        };
+        let has_added_separator =
+            output[start + START.len()..].starts_with(&format!("\n{ADDED_SEPARATOR}\n"));
+        let block_start =
+            if has_added_separator && start > 0 && output.as_bytes()[start - 1] == b'\n' {
+                start - 1
+            } else {
+                start
+            };
         let end = output[start..]
             .find(END)
             .context("incomplete wt shell integration block")?
@@ -76,10 +80,17 @@ fn update(install: bool) -> Result<()> {
         };
         let mut output = without_managed_block(&existing)?;
         if install {
-            if !output.is_empty() {
+            let needs_separator = !output.is_empty() && !output.ends_with('\n');
+            if needs_separator {
                 output.push('\n');
             }
-            output.push_str(&format!("{START}\n{command}\n{END}\n"));
+            output.push_str(START);
+            output.push('\n');
+            if needs_separator {
+                output.push_str(ADDED_SEPARATOR);
+                output.push('\n');
+            }
+            output.push_str(&format!("{command}\n{END}\n"));
         }
         if output != existing {
             if let Some(parent) = path.parent() {

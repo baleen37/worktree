@@ -79,6 +79,25 @@ fn repeated_install_and_uninstall_preserve_user_text() {
 }
 
 #[test]
+fn uninstall_preserves_lines_around_a_middle_block() {
+    let home = tempfile::tempdir().unwrap();
+    let zsh = home.path().join(".zshrc");
+    std::fs::write(
+        &zsh,
+        format!("before\n{START}\neval \"$(wt config shell init zsh)\"\n{END}\nafter\n"),
+    )
+    .unwrap();
+
+    let output = wt(&["config", "shell", "uninstall"], home.path());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(zsh).unwrap(), "before\nafter\n");
+}
+
+#[test]
 fn picker_requires_tty_and_leaves_path_file_untouched() {
     let repo = GitRepo::new();
     let path_file = repo.primary.parent().unwrap().join("result");
