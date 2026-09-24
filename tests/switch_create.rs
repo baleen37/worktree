@@ -26,6 +26,7 @@ impl Repo {
         let linked = root.join("linked feature");
         git(&root, &["init", "-b", base, primary.to_str().unwrap()]);
         std::fs::write(primary.join("README.md"), "initial\n").unwrap();
+        std::fs::write(primary.join(".gitignore"), "/.worktrees/\n").unwrap();
         git(&primary, &["add", "."]);
         commit(&primary, "initial");
         git(&root, &["init", "--bare", origin.to_str().unwrap()]);

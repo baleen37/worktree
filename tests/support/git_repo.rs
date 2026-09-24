@@ -24,7 +24,8 @@ impl GitRepo {
             &["init", "-b", base, primary.to_str().unwrap()],
         );
         std::fs::write(primary.join("README.md"), "test repository\n").unwrap();
-        git(&primary, &["add", "README.md"]);
+        std::fs::write(primary.join(".gitignore"), "/.worktrees/\n").unwrap();
+        git(&primary, &["add", "README.md", ".gitignore"]);
         git(
             &primary,
             &[
