@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 
 use crate::git::{RepoContext, git_text};
+use crate::integrations::{herdr::Herdr, nix_gc};
 use crate::shell::write_path;
 
 pub struct WorktreeInfo {
@@ -166,6 +167,9 @@ pub fn prune(repo: &RepoContext, options: PruneOptions) -> Result<PruneOutcome> 
         git_text(&repo.primary_root, &["worktree", "remove", "--", target])?;
         outcome.removed.push(path);
     }
+    if !outcome.removed.is_empty() {
+        nix_gc::start();
+    }
     Ok(outcome)
 }
 
@@ -243,6 +247,7 @@ pub fn remove(
             git_text(base_path, &["branch", "-d", branch])?;
         }
     }
+    nix_gc::start();
     Ok(())
 }
 
@@ -262,6 +267,9 @@ pub fn switch_existing(
         .into_iter()
         .find(|entry| entry.branch.as_deref() == Some(branch))
     {
+        if let Some(herdr) = Herdr::active(&repo.primary_root)? {
+            herdr.open(&repo.primary_root, &entry.path)?;
+        }
         write_path(shell_path_file, &entry.path)?;
         return Ok(entry.path);
     }
@@ -275,10 +283,15 @@ pub fn switch_existing(
     }
 
     let target_text = target.to_str().context("worktree path is not UTF-8")?;
-    git_text(
-        &repo.primary_root,
-        &["worktree", "add", "--", target_text, branch],
-    )?;
+    if let Some(herdr) = Herdr::active(&repo.primary_root)? {
+        herdr.create(&repo.primary_root, branch, &repo.base_branch, &target)?;
+    } else {
+        git_text(
+            &repo.primary_root,
+            &["worktree", "add", "--", target_text, branch],
+        )?;
+    }
+    nix_gc::start();
     write_path(shell_path_file, &target)?;
     Ok(target)
 }
@@ -326,18 +339,23 @@ pub fn create_branch(
         bail!("worktree path already exists: {}", target.display());
     }
     let target_text = target.to_str().context("worktree path is not UTF-8")?;
-    git_text(
-        &repo.primary_root,
-        &[
-            "worktree",
-            "add",
-            "-b",
-            name,
-            "--",
-            target_text,
-            &repo.base_branch,
-        ],
-    )?;
+    if let Some(herdr) = Herdr::active(&repo.primary_root)? {
+        herdr.create(&repo.primary_root, name, &repo.base_branch, &target)?;
+    } else {
+        git_text(
+            &repo.primary_root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                name,
+                "--",
+                target_text,
+                &repo.base_branch,
+            ],
+        )?;
+    }
+    nix_gc::start();
     write_path(shell_path_file, &target)?;
     Ok(target)
 }

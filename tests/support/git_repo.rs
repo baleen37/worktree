@@ -54,6 +54,22 @@ impl GitRepo {
             linked,
         }
     }
+
+    #[allow(dead_code)] // This shared helper is used only by integration adapter tests.
+    pub fn with_origin() -> Self {
+        let repo = Self::new();
+        let origin = repo.primary.parent().unwrap().join("origin.git");
+        git(
+            repo.primary.parent().unwrap(),
+            &["init", "--bare", origin.to_str().unwrap()],
+        );
+        git(
+            &repo.primary,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git(&repo.primary, &["push", "-u", "origin", "main"]);
+        repo
+    }
 }
 
 pub fn git(cwd: &Path, args: &[&str]) {
