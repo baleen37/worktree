@@ -1,15 +1,19 @@
+#[path = "support/wt_command.rs"]
+mod wt_command;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
+use wt_command::TestWt;
 
 struct Repo {
     _temp: TempDir,
     primary: PathBuf,
     linked: PathBuf,
     writer: PathBuf,
+    wt: TestWt,
 }
 
 impl Repo {
@@ -55,6 +59,7 @@ impl Repo {
             primary,
             linked,
             writer,
+            wt: TestWt::new(),
         }
     }
 
@@ -115,8 +120,8 @@ fn creates_explicit_branch_from_fast_forwarded_main() {
     let remote_head = repo.remote_commit();
     let target = repo.primary.join(".worktrees/feature-new");
 
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.linked)
         .args(["switch", "-c", "feature/new"])
         .env_remove("WT_SHELL_PATH_FILE")
@@ -138,8 +143,8 @@ fn dirty_base_prevents_creation() {
     std::fs::write(repo.primary.join("README.md"), "dirty\n").unwrap();
     let target = repo.primary.join(".worktrees/feature-new");
 
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.linked)
         .args(["switch", "-c", "feature/new"])
         .assert()
@@ -159,8 +164,8 @@ fn divergent_base_prevents_creation() {
     commit(&repo.primary, "local advance");
     repo.remote_commit();
 
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.linked)
         .args(["switch", "-c", "feature/new"])
         .assert()
@@ -179,8 +184,8 @@ fn creates_from_master_and_writes_shell_path() {
     let target = repo.primary.join(".worktrees/feature-new");
     let path_file = repo.primary.parent().unwrap().join("shell-path");
 
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.linked)
         .args(["switch", "-c", "feature/new"])
         .env("WT_SHELL_PATH_FILE", &path_file)
@@ -198,8 +203,8 @@ fn creates_from_master_and_writes_shell_path() {
 #[test]
 fn existing_local_branch_is_rejected() {
     let repo = Repo::new("main");
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.linked)
         .args(["switch", "-c", "feature/list"])
         .assert()
@@ -215,8 +220,8 @@ fn existing_local_branch_is_rejected() {
 fn missing_checked_out_base_prevents_creation() {
     let repo = Repo::new("main");
     git(&repo.primary, &["checkout", "--detach"]);
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.linked)
         .args(["switch", "-c", "feature/new"])
         .assert()
@@ -229,16 +234,16 @@ fn missing_checked_out_base_prevents_creation() {
 fn normalized_path_collision_preserves_registered_worktree() {
     let repo = Repo::new("main");
     let target = repo.primary.join(".worktrees/feature-ui");
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.linked)
         .args(["switch", "-c", "feature/ui"])
         .assert()
         .success();
     std::fs::write(target.join("keep"), "first worktree").unwrap();
 
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.linked)
         .args(["switch", "-c", "feature-ui"])
         .assert()
@@ -263,8 +268,8 @@ fn fetch_failure_prevents_creation() {
         &repo.primary,
         &["remote", "set-url", "origin", "/missing/origin.git"],
     );
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.linked)
         .args(["switch", "-c", "feature/new"])
         .assert()
@@ -278,8 +283,9 @@ fn fetch_failure_prevents_creation() {
 fn omitted_name_creates_legacy_three_word_branch() {
     let repo = Repo::new("main");
     let remote_head = repo.remote_commit();
-    let output = Command::cargo_bin("wt")
-        .unwrap()
+    let output = repo
+        .wt
+        .command()
         .current_dir(&repo.linked)
         .args(["switch", "-c"])
         .env_remove("WT_SHELL_PATH_FILE")

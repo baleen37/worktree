@@ -1,19 +1,22 @@
 #[path = "support/git_repo.rs"]
 mod git_repo;
+#[path = "support/wt_command.rs"]
+mod wt_command;
 
 use std::path::Path;
 use std::process::Command;
 
-use assert_cmd::Command as WtCommand;
 use expectrl::{Eof, Expect, Session};
 use git_repo::GitRepo;
+use wt_command::TestWt;
 
 const START: &str = "# >>> wt shell integration >>>";
 const END: &str = "# <<< wt shell integration <<<";
 
 fn wt(args: &[&str], home: &Path) -> std::process::Output {
-    WtCommand::cargo_bin("wt")
-        .unwrap()
+    let tools = TestWt::new();
+    tools
+        .command()
         .args(args)
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
@@ -100,11 +103,12 @@ fn uninstall_preserves_lines_around_a_middle_block() {
 #[test]
 fn picker_requires_tty_and_leaves_path_file_untouched() {
     let repo = GitRepo::new();
+    let tools = TestWt::new();
     let path_file = repo.primary.parent().unwrap().join("result");
     std::fs::write(&path_file, "sentinel\n").unwrap();
     for args in [vec![], vec!["switch"]] {
-        let output = WtCommand::cargo_bin("wt")
-            .unwrap()
+        let output = tools
+            .command()
             .current_dir(&repo.primary)
             .args(args)
             .env("WT_SHELL_PATH_FILE", &path_file)
@@ -119,8 +123,9 @@ fn picker_requires_tty_and_leaves_path_file_untouched() {
 #[test]
 fn picker_selects_linked_worktree_from_tty() {
     let repo = GitRepo::new();
+    let tools = TestWt::new();
     let path_file = repo.primary.parent().unwrap().join("result");
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin("wt"));
+    let mut command = tools.process_command();
     command
         .current_dir(&repo.primary)
         .env("WT_SHELL_PATH_FILE", &path_file);
@@ -139,9 +144,10 @@ fn picker_selects_linked_worktree_from_tty() {
 #[test]
 fn picker_escape_keeps_shell_path_unchanged() {
     let repo = GitRepo::new();
+    let tools = TestWt::new();
     let path_file = repo.primary.parent().unwrap().join("result");
     std::fs::write(&path_file, "sentinel\n").unwrap();
-    let mut command = Command::new(assert_cmd::cargo::cargo_bin("wt"));
+    let mut command = tools.process_command();
     command
         .current_dir(&repo.primary)
         .arg("switch")
@@ -157,6 +163,7 @@ fn picker_escape_keeps_shell_path_unchanged() {
 #[test]
 fn shell_wrappers_change_to_path_with_spaces() {
     let repo = GitRepo::new();
+    let tools = TestWt::new();
     let home = tempfile::tempdir().unwrap();
     let bin = home.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
@@ -185,10 +192,9 @@ fn shell_wrappers_change_to_path_with_spaces() {
         std::fs::write(&script, body).unwrap();
         let output = Command::new(&binary)
             .arg(&script)
-            .env(
-                "PATH",
-                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
-            )
+            .env("PATH", tools.path_with(&bin))
+            .env_remove("HERDR_ENV")
+            .env_remove("HERDR_WORKSPACE_ID")
             .env("HOME", home.path())
             .output()
             .unwrap_or_else(|err| panic!("{shell} unavailable at {binary}: {err}"));

@@ -1,15 +1,19 @@
+#[path = "support/wt_command.rs"]
+mod wt_command;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
+use wt_command::TestWt;
 
 struct Repo {
     _temp: TempDir,
     primary: PathBuf,
     base: PathBuf,
     feature: PathBuf,
+    wt: TestWt,
 }
 
 impl Repo {
@@ -44,6 +48,7 @@ impl Repo {
             primary,
             base,
             feature,
+            wt: TestWt::new(),
         }
     }
 
@@ -107,8 +112,8 @@ fn current_worktree_removal_returns_base_path_and_deletes_merged_branch() {
         ],
     );
     let path_file = repo.primary.parent().unwrap().join("shell-path");
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.feature)
         .arg("remove")
         .env("WT_SHELL_PATH_FILE", &path_file)
@@ -129,8 +134,8 @@ fn explicit_other_worktree_removal_preserves_shell_path_file() {
     let repo = Repo::new();
     let path_file = repo.primary.parent().unwrap().join("shell-path");
     std::fs::write(&path_file, "unchanged\n").unwrap();
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.base)
         .args(["remove", "feature/remove"])
         .env("WT_SHELL_PATH_FILE", &path_file)
@@ -144,8 +149,8 @@ fn explicit_other_worktree_removal_preserves_shell_path_file() {
 #[test]
 fn explicit_path_removes_only_that_worktree() {
     let repo = Repo::new();
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.base)
         .args(["remove", repo.feature.to_str().unwrap()])
         .env_remove("WT_SHELL_PATH_FILE")
@@ -163,8 +168,8 @@ fn branch_name_takes_precedence_over_a_same_named_path() {
     let misleading_path = repo.base.join("feature/remove");
     std::fs::create_dir_all(&misleading_path).unwrap();
     std::fs::write(misleading_path.join("keep"), "untouched\n").unwrap();
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.base)
         .args(["remove", "feature/remove"])
         .assert()
@@ -180,8 +185,8 @@ fn branch_name_takes_precedence_over_a_same_named_path() {
 fn dirty_target_is_preserved() {
     let repo = Repo::new();
     std::fs::write(repo.feature.join("untracked"), "keep\n").unwrap();
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.base)
         .args(["remove", "feature/remove"])
         .assert()
@@ -198,8 +203,8 @@ fn dirty_target_is_preserved() {
 fn primary_and_base_worktrees_are_preserved() {
     let repo = Repo::new();
     for target in [repo.primary.as_path(), repo.base.as_path()] {
-        Command::cargo_bin("wt")
-            .unwrap()
+        repo.wt
+            .command()
             .current_dir(&repo.feature)
             .args(["remove", target.to_str().unwrap()])
             .assert()
@@ -223,8 +228,8 @@ fn unmerged_branch_survives_successful_removal() {
     std::fs::write(repo.feature.join("change"), "unmerged\n").unwrap();
     git(&repo.feature, &["add", "."]);
     commit(&repo.feature, "feature change");
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.base)
         .args(["remove", "feature/remove"])
         .assert()
@@ -258,8 +263,8 @@ fn merged_branch_is_deleted_even_with_an_unmerged_upstream() {
             "feature/remove",
         ],
     );
-    Command::cargo_bin("wt")
-        .unwrap()
+    repo.wt
+        .command()
         .current_dir(&repo.base)
         .args(["remove", "feature/remove"])
         .assert()

@@ -1,14 +1,18 @@
+#[path = "support/wt_command.rs"]
+mod wt_command;
+
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use assert_cmd::Command;
 use expectrl::{Eof, Expect, Session};
 use tempfile::TempDir;
+use wt_command::TestWt;
 
 struct Repo {
     _temp: TempDir,
     primary: PathBuf,
     base: PathBuf,
+    wt: TestWt,
 }
 
 impl Repo {
@@ -30,6 +34,7 @@ impl Repo {
             _temp: temp,
             primary,
             base,
+            wt: TestWt::new(),
         }
     }
 
@@ -48,8 +53,8 @@ impl Repo {
     }
 
     fn run(&self, args: &[&str]) -> std::process::Output {
-        Command::cargo_bin("wt")
-            .unwrap()
+        self.wt
+            .command()
             .current_dir(&self.base)
             .args(args)
             .output()
@@ -57,7 +62,7 @@ impl Repo {
     }
 
     fn pty(&self, args: &[&str]) -> expectrl::session::OsSession {
-        let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("wt"));
+        let mut command = self.wt.process_command();
         command.current_dir(&self.base).args(args);
         let mut session = Session::spawn(command).unwrap();
         session.set_expect_timeout(Some(std::time::Duration::from_secs(5)));
@@ -195,8 +200,9 @@ fn current_worktree_is_preserved_even_when_merged_and_clean() {
     let repo = Repo::new();
     let current = repo.primary.parent().unwrap().join("current");
     repo.worktree("feature/current", &current);
-    let output = Command::cargo_bin("wt")
-        .unwrap()
+    let output = repo
+        .wt
+        .command()
         .current_dir(&current)
         .args(["prune", "--yes"])
         .output()
@@ -332,9 +338,10 @@ fn merge_base_failure_is_reported_without_removal() {
     .unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&fake_git, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!("{}:{}", fake_dir.display(), std::env::var("PATH").unwrap());
-    let output = Command::cargo_bin("wt")
-        .unwrap()
+    let path = repo.wt.path_with(&fake_dir);
+    let output = repo
+        .wt
+        .command()
         .current_dir(&repo.base)
         .args(["prune", "--yes"])
         .env("PATH", path)

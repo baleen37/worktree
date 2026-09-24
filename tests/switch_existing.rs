@@ -1,17 +1,19 @@
 #[path = "support/git_repo.rs"]
 mod git_repo;
+#[path = "support/wt_command.rs"]
+mod wt_command;
 
-use assert_cmd::Command;
 use git_repo::{GitRepo, git};
 use predicates::prelude::*;
+use wt_command::TestWt;
 
 #[test]
 fn reuses_registered_worktree_and_writes_shell_path() {
     let repo = GitRepo::new();
+    let wt = TestWt::new();
     let path_file = repo.primary.parent().unwrap().join("shell-path");
 
-    Command::cargo_bin("wt")
-        .unwrap()
+    wt.command()
         .current_dir(&repo.primary)
         .args(["switch", "feature/list"])
         .env("WT_SHELL_PATH_FILE", &path_file)
@@ -28,11 +30,11 @@ fn reuses_registered_worktree_and_writes_shell_path() {
 #[test]
 fn creates_worktree_for_existing_local_branch_and_prints_path() {
     let repo = GitRepo::new();
+    let wt = TestWt::new();
     git(&repo.primary, &["branch", "feature/new"]);
     let target = repo.primary.join(".worktrees/feature-new");
 
-    Command::cargo_bin("wt")
-        .unwrap()
+    wt.command()
         .current_dir(&repo.linked)
         .args(["switch", "feature/new"])
         .env_remove("WT_SHELL_PATH_FILE")
@@ -52,10 +54,10 @@ fn creates_worktree_for_existing_local_branch_and_prints_path() {
 #[test]
 fn unknown_branch_does_not_create_branch_or_directory() {
     let repo = GitRepo::new();
+    let wt = TestWt::new();
     let target = repo.primary.join(".worktrees/feature-missing");
 
-    Command::cargo_bin("wt")
-        .unwrap()
+    wt.command()
         .current_dir(&repo.primary)
         .args(["switch", "feature/missing"])
         .assert()
@@ -69,13 +71,13 @@ fn unknown_branch_does_not_create_branch_or_directory() {
 #[test]
 fn occupied_normalized_path_is_preserved() {
     let repo = GitRepo::new();
+    let wt = TestWt::new();
     git(&repo.primary, &["branch", "feature/new"]);
     let target = repo.primary.join(".worktrees/feature-new");
     std::fs::create_dir_all(&target).unwrap();
     std::fs::write(target.join("keep"), "untouched").unwrap();
 
-    Command::cargo_bin("wt")
-        .unwrap()
+    wt.command()
         .current_dir(&repo.primary)
         .args(["switch", "feature/new"])
         .assert()
