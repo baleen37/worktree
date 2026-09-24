@@ -28,6 +28,83 @@ impl WorktreeInfo {
     }
 }
 
+pub fn remove(
+    repo: &RepoContext,
+    target: Option<&str>,
+    shell_path_file: Option<&Path>,
+) -> Result<()> {
+    let entries = WorktreeInfo::list(repo)?;
+    let entry = if let Some(target) = target {
+        if let Some(entry) = entries
+            .iter()
+            .find(|entry| entry.branch.as_deref() == Some(target))
+        {
+            entry
+        } else {
+            let path = std::fs::canonicalize(target)
+                .with_context(|| format!("unknown worktree: {target}"))?;
+            entries
+                .iter()
+                .find(|entry| entry.path == path)
+                .with_context(|| format!("unknown worktree: {target}"))?
+        }
+    } else {
+        entries
+            .iter()
+            .find(|entry| entry.is_current)
+            .context("current worktree is not registered")?
+    };
+
+    if entry.is_primary {
+        bail!("cannot remove primary worktree: {}", entry.path.display());
+    }
+    if entry.branch.as_deref() == Some(&repo.base_branch) {
+        bail!("cannot remove base worktree: {}", entry.path.display());
+    }
+    if !git_text(
+        &entry.path,
+        &["status", "--porcelain", "--untracked-files=all"],
+    )?
+    .is_empty()
+    {
+        bail!("worktree is dirty: {}", entry.path.display());
+    }
+
+    let base_path = entries
+        .iter()
+        .find(|entry| entry.branch.as_deref() == Some(&repo.base_branch))
+        .map(|entry| &entry.path)
+        .context("base branch is not checked out in a worktree")?;
+    if entry.is_current {
+        std::env::set_current_dir(base_path)
+            .with_context(|| format!("could not change directory to {}", base_path.display()))?;
+    }
+    let target_path = entry.path.to_str().context("worktree path is not UTF-8")?;
+    git_text(
+        &repo.primary_root,
+        &["worktree", "remove", "--", target_path],
+    )?;
+
+    if entry.is_current {
+        write_path(shell_path_file, base_path)?;
+    }
+
+    if let Some(branch) = &entry.branch {
+        let branch_ref = format!("refs/heads/{branch}");
+        let base_ref = format!("refs/heads/{}", repo.base_branch);
+        if git_text(
+            &repo.primary_root,
+            &["merge-base", "--is-ancestor", &branch_ref, &base_ref],
+        )
+        .is_ok()
+        {
+            let _ = git_text(base_path, &["branch", "--unset-upstream", branch]);
+            git_text(base_path, &["branch", "-d", branch])?;
+        }
+    }
+    Ok(())
+}
+
 pub fn switch_existing(
     repo: &RepoContext,
     branch: &str,
