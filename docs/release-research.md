@@ -29,6 +29,13 @@
 - 실제 태그 게시 뒤 Release asset을 내려받아 `sha256.sum`을 확인하고 각 아카이브에 `gh attestation verify`를 실행한다.
 - macOS ARM64와 Linux x86_64/ARM64에서 태그 고정 설치기를 실행하고 `wt --help`와 `wt config shell install`을 확인한다. NixOS는 flake 경로로 확인한다.
 
+## 검증 실패 시 롤백
+
+- 릴리즈 asset, 체크섬, attestation, 설치기 중 하나라도 검증에 실패하면 배포를 중단하고 `v0.1.0`을 철회한다.
+- GitHub Release가 있으면 `gh release delete v0.1.0 --repo baleen37/worktree --yes --cleanup-tag`로 Release와 원격 태그를 삭제한다. workflow가 Release를 만들기 전에 실패했다면 `git push origin --delete v0.1.0`으로 원격 태그를 삭제한다. 두 경우 모두 로컬 태그를 `git tag -d v0.1.0`으로 지운다.
+- `v0.1.0` 태그를 재사용하지 않는다. 문제를 고치고 패키지 버전을 `0.1.1`로 올린 뒤 CI와 릴리즈 검증을 다시 통과시키고 `v0.1.1`을 게시한다.
+- 이 절차는 이후 다운로드를 막지만 이미 내려받은 사본은 회수하지 못한다.
+
 ## 참고 자료
 
 - [cargo-dist 0.33.0 설정](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/reference/config.md)
