@@ -12,9 +12,10 @@
 ## 검증된 설정
 
 - 대상은 `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`다.
+- Linux 바이너리는 glibc 2.35 이상을 요구한다. 타깃 runner를 Ubuntu 22.04로 고정해 Debian 12(glibc 2.36)에서도 설치 가능하게 한다.
 - GitHub Releases를 호스팅으로 사용하고 SHA256 체크섬과 GitHub artifact attestation을 유지한다.
 - Attestation은 기본 `build-local-artifacts` job에서 생성한다. 이 job은 `contents: read`, `id-token: write`, `attestations: write` 권한을 가진다. `plan`과 `host`는 릴리즈 생성·게시를 위해 `contents: write`를 가진다.
-- runner 매핑은 macOS ARM64 `macos-14`, Linux x86_64 `ubuntu-24.04`, Linux ARM64 `ubuntu-24.04-arm`이다.
+- runner 매핑은 macOS ARM64 `macos-14`, Linux x86_64 `ubuntu-22.04`, Linux ARM64 `ubuntu-22.04-arm`이다.
 
 ## Workflow 규칙
 
@@ -31,10 +32,9 @@
 
 ## 검증 실패 시 롤백
 
-- 릴리즈 asset, 체크섬, attestation, 설치기 중 하나라도 검증에 실패하면 배포를 중단하고 `v0.1.0`을 철회한다.
-- GitHub Release가 있으면 `gh release delete v0.1.0 --repo baleen37/worktree --yes --cleanup-tag`로 Release와 원격 태그를 삭제한다. workflow가 Release를 만들기 전에 실패했다면 `git push origin --delete v0.1.0`으로 원격 태그를 삭제한다. 두 경우 모두 로컬 태그를 `git tag -d v0.1.0`으로 지운다.
-- `v0.1.0` 태그를 재사용하지 않는다. 문제를 고치고 패키지 버전을 `0.1.1`로 올린 뒤 CI와 릴리즈 검증을 다시 통과시키고 `v0.1.1`을 게시한다.
-- 이 절차는 이후 다운로드를 막지만 이미 내려받은 사본은 회수하지 못한다.
+- `v0.1.0`은 Linux 바이너리가 glibc 2.39를 요구해 Debian 12에서 설치·실행되지 않아 철회했다.
+- `v0.1.0` 태그를 재사용하지 않는다. Linux runner를 Ubuntu 22.04로 낮추고 패키지 버전을 `0.1.1`로 올려 CI와 릴리즈 검증을 다시 통과시킨다.
+- 이후 검증 실패 시 해당 버전의 GitHub Release가 있으면 `gh release delete <TAG> --repo baleen37/worktree --yes --cleanup-tag`로 Release와 원격 태그를 삭제한다. Release를 만들기 전에 실패했다면 `git push origin --delete <TAG>`으로 원격 태그를 삭제한다. 두 경우 모두 로컬 태그를 `git tag -d <TAG>`으로 지운다. 이미 다운로드된 사본은 회수할 수 없다.
 
 ## 참고 자료
 
