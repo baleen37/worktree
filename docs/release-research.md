@@ -1,22 +1,38 @@
-# `wt` 공개 릴리스 조사 (2026-09-24)
+# `wt` 공개 릴리스 조사
 
-범위: `cargo-dist` **0.33.0**으로 `baleen37/worktree`의 세 타깃을 GitHub Releases와 `baleen37/homebrew-tap`에 게시하는 Task 9. 아래 버전별 판단은 [v0.33.0 릴리스](https://github.com/axodotdev/cargo-dist/releases/tag/v0.33.0)와 해당 [태그의 소스](https://github.com/axodotdev/cargo-dist/tree/v0.33.0)를 기준으로 한다.
+갱신: 2026-09-25. cargo-dist **0.33.0**의 세 타깃 GitHub Release와 셸 설치기를 기준으로 한다.
 
-## 확인된 설정
+## 결정
 
-- `[dist]`에 `cargo-dist-version = "0.33.0"`, `ci = "github"`, `hosting = "github"`, 세 `targets`, `checksum = "sha256"`, `github-attestations = true`, `installers = ["homebrew"]`, `tap = "baleen37/homebrew-tap"`, `publish-jobs = ["homebrew"]`를 둔다. `checksum`의 기본값도 SHA256이며 각 archive의 `.sha256`과 통합 `sha256.sum`이 생성된다. [0.33.0 설정](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/reference/config.md), [0.33.0 체크섬 문서](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/artifacts/checksums.md)
-- 기본 attestation 단계는 `build-local-artifacts`다. 0.33.0 생성 템플릿은 그 job에 `attestations: write`, `id-token: write`, `contents: read`를 지정한다. `github-attestations-phase = "host"`로 옮기면 host에 세 권한(`contents: write` 포함)이 합쳐진다. GitHub 공식 예제도 바이너리 attestation에 `id-token: write`, `attestations: write`, `contents: read`를 요구한다. 따라서 별도 attestation job을 전제하지 말고 기본 build job을 확인한다. [설정](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/reference/config.md), [생성 템플릿](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/cargo-dist/templates/ci/github/release.yml.j2), [GitHub 문서](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
-- `worktree` 패키지 이름이 기본 formula 이름이므로 `Formula/worktree.rb`가 예상된다. 생성 formula는 플랫폼별 GitHub archive URL과 내장 SHA256을 사용하고, `publish-homebrew-formula` job은 `host` 뒤 tap에 commit/push한다. `description`과 `homepage`는 현재 `Cargo.toml`에 없으므로 추가한다. tap은 미리 존재해야 하고 게시 토큰은 소스 저장소의 `HOMEBREW_TAP_TOKEN` secret으로 둔다. [Homebrew 안내](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/installers/homebrew.md), [formula 템플릿](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/cargo-dist/templates/installer/homebrew.rb.j2), [게시 템플릿](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/cargo-dist/templates/ci/github/partials/publish_homebrew.yml.j2), [Homebrew tap 규칙](https://docs.brew.sh/Taps)
-- 공식 러너 표에서 `macos-14`는 arm64, `ubuntu-24.04`는 x64, `ubuntu-24.04-arm`은 arm64다. CI matrix와 릴리스 생성 결과의 runner/target 매핑을 함께 확인한다. [GitHub 호스팅 러너](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+- cargo-dist installer는 `shell`을 사용한다. Homebrew tap, 게시 job, tap token은 사용하지 않는다.
+- macOS와 Linux 설치는 cargo-dist가 생성한 `worktree-installer.sh`로 제공한다. 기본 설치 경로는 `CARGO_HOME`이며 설치기는 PATH 추가를 시도한다.
+- 셸에서 `wt switch`가 호출 셸의 디렉터리를 바꾸도록 하려면 바이너리 설치 후 `wt config shell install`을 실행한다.
+- 셸 설치기가 지원하지 않는 NixOS와 선언적 설치가 필요한 사용자는 기존 Nix flake/Home Manager 경로를 사용한다.
 
-## 승인 계획에서 수정할 부분
+## 검증된 설정
 
-1. **생성 workflow의 권한은 최소 범위가 아니다.** 0.33.0 생성기는 루트 `contents: write`를 넣는다. `plan`은 태그 게시 시 `dist host --steps=create`로 초안 Release를 만들고, `host`는 업로드/게시를 실행한다. 따라서 `plan`과 `host`에는 `contents: write`, build와 tap 게시에는 필요한 읽기 권한만 job별로 선언해야 한다. `github-custom-job-permissions`는 *사용자 지정 job* 전용이라 내장 job의 루트 권한을 해결하지 않는다. `ci.yml`은 독립 workflow로 `contents: read`를 둔다. [생성기](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/cargo-dist/src/backend/ci/github.rs), [release 템플릿](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/cargo-dist/templates/ci/github/release.yml.j2), [권한 설정 의미](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions)
-2. **tap checkout만 예외적으로 credential을 저장한다.** 템플릿은 대부분 `persist-credentials: false`지만 tap 게시 job은 `true`와 tap PAT로 checkout한 다음 `git push`한다. checkout v6는 저장된 credential을 `$RUNNER_TEMP`의 별도 파일에 두고 job 종료 시 제거한다. 모든 checkout을 `false`로 하려면 tap checkout에서 저장을 끄고, `git push` 단계에만 `HOMEBREW_TAP_TOKEN`을 환경 변수로 주며 Git의 `GIT_ASKPASS`로 username `x-access-token`과 token을 반환해야 한다(구현 제안). 토큰은 선택한 tap 저장소의 Contents 쓰기로 제한한다. [게시 템플릿](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/cargo-dist/templates/ci/github/partials/publish_homebrew.yml.j2), [checkout 설명](https://github.com/actions/checkout/blob/main/README.md), [Git credential 규칙](https://git-scm.com/docs/gitcredentials), [fine-grained PAT](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
-3. **수동 수정 경로를 명시한다.** 내장 job 권한과 tap 인증 방식을 바꾸면 `release.yml`이 생성본과 달라진다. `allow-dirty = ["ci"]`를 설정해야 `dist`가 이를 오류로 처리하거나 덮어쓰지 않는다. 대신 이후 `dist init` 갱신 때 생성 템플릿과 수동 변경을 다시 비교해야 한다. `cargo dist plan`만으로 최소 권한은 증명되지 않으므로 생성된 YAML을 검사한다. [0.33.0 CI 수정 안내](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/ci/customizing.md#hand-editing-releaseyml)
-4. **Action은 생성 workflow까지 전체 SHA로 고정한다.** 0.33.0은 `[dist.github-action-commits]`로 Action별 commit을 대체할 수 있고, 미설정 시 tag를 사용한다. 생성 파일의 모든 외부 `uses:`와 직접 작성한 `ci.yml`의 `uses:`를 실제 upstream commit과 대조한다. GitHub는 전체 commit SHA 고정을 불변 Action 참조 방법으로 권장한다. [0.33.0 설정](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/reference/config.md#github-action-commits), [0.33.0 생성기](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/cargo-dist/src/backend/ci/github.rs), [GitHub 보안 지침](https://docs.github.com/en/actions/reference/security/secure-use#pin-actions-to-a-full-length-commit-sha)
+- 대상은 `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`다.
+- GitHub Releases를 호스팅으로 사용하고 SHA256 체크섬과 GitHub artifact attestation을 유지한다.
+- Attestation은 기본 `build-local-artifacts` job에서 생성한다. 이 job은 `contents: read`, `id-token: write`, `attestations: write` 권한을 가진다. `plan`과 `host`는 릴리즈 생성·게시를 위해 `contents: write`를 가진다.
+- runner 매핑은 macOS ARM64 `macos-14`, Linux x86_64 `ubuntu-24.04`, Linux ARM64 `ubuntu-24.04-arm`이다.
 
-## 릴리스 때 확인할 증거
+## Workflow 규칙
 
-- 세 archive와 `sha256.sum`을 Release에서 내려받아 `shasum -a 256 -c sha256.sum`을 실행하고, 각 archive에 `gh attestation verify <archive> --repo baleen37/worktree`를 실행한다. 이 검증은 실제 게시 이후에만 가능하다. [0.33.0 체크섬](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/artifacts/checksums.md), [0.33.0 attestation](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/supplychain-security/attestations/github.md), [GitHub 검증 지침](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/verify-attestations)
-- tap의 `Formula/worktree.rb`가 승인 태그의 세 archive URL과 SHA256을 가리키는지 확인하고 `brew install baleen37/tap/worktree`로 설치한다. Homebrew는 `homebrew-tap`의 `homebrew-`를 명령에서 생략한다. [0.33.0 Homebrew 안내](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/installers/homebrew.md), [Homebrew tap 규칙](https://docs.brew.sh/Taps)
+- `release.yml`은 버전 형식과 맞는 태그 push에서만 실행한다. Pull request 검증은 별도 CI workflow가 담당한다.
+- 전역 workflow 권한은 `contents: read`다. 각 job은 필요한 권한만 선언하고 checkout은 `persist-credentials: false`를 사용한다.
+- 수동 권한·credential hardening을 유지하도록 `allow-dirty = ["ci"]`를 둔다. cargo-dist workflow를 다시 생성할 때는 생성본과 수동 보안 변경을 재검토한다.
+- GitHub Actions 참조는 전체 commit SHA로 고정한다.
+
+## 릴리즈 검증
+
+- `cargo dist plan`에서 세 아카이브, 셸 설치기, 통합 `sha256.sum`, attestation 구성을 확인한다.
+- 실제 태그 게시 뒤 Release asset을 내려받아 `sha256.sum`을 확인하고 각 아카이브에 `gh attestation verify`를 실행한다.
+- macOS ARM64와 Linux x86_64/ARM64에서 태그 고정 설치기를 실행하고 `wt --help`와 `wt config shell install`을 확인한다. NixOS는 flake 경로로 확인한다.
+
+## 참고 자료
+
+- [cargo-dist 0.33.0 설정](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/reference/config.md)
+- [cargo-dist 0.33.0 셸 설치기](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/installers/shell.md)
+- [cargo-dist 0.33.0 체크섬](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/artifacts/checksums.md)
+- [cargo-dist 0.33.0 GitHub attestation](https://github.com/axodotdev/cargo-dist/blob/v0.33.0/book/src/supplychain-security/attestations/github.md)
+- [GitHub artifact attestation 검증](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/verify-attestations)

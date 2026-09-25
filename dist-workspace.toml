@@ -10,11 +10,9 @@ targets = [
   "x86_64-unknown-linux-gnu",
   "aarch64-unknown-linux-gnu",
 ]
-installers = ["homebrew"]
+installers = ["shell"]
 checksum = "sha256"
 github-attestations = true
-tap = "baleen37/homebrew-tap"
-publish-jobs = ["homebrew"]
 allow-dirty = ["ci"]
 
 [dist.github-custom-runners]
