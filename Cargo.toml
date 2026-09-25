@@ -1,11 +1,14 @@
 [package]
-name = "worktree"
-version = "0.1.1"
+name = "worktree-cli"
+version = "0.1.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/baleen37/worktree"
 homepage = "https://github.com/baleen37/worktree"
 description = "A Git worktree switcher for creating, reusing, listing, and safely removing worktrees."
+
+[lib]
+name = "worktree"
 
 [[bin]]
 name = "wt"
