@@ -39,8 +39,29 @@ impl FakeTools {
         fs::write(&herdr, "#!/bin/sh\nprintf 'herdr' >> \"$WT_LOG\"\nfor arg in \"$@\"; do printf ' <%s>' \"$arg\" >> \"$WT_LOG\"; done\nprintf '\\n' >> \"$WT_LOG\"\nif [ \"$WT_HERDR_FAIL\" = \"$2\" ]; then exit 31; fi\nif [ \"$1 $2\" = 'worktree list' ]; then printf '%s\\n' \"$WT_HERDR_LIST\"; exit 0; fi\nif [ \"$1 $2\" = 'worktree create' ]; then\n  shift 2\n  while [ $# -gt 0 ]; do\n    case \"$1\" in --branch) branch=$2; shift 2;; --base) base=$2; shift 2;; --path) target=$2; shift 2;; *) shift;; esac\n  done\n  if \"$WT_REAL_GIT\" -C \"$WT_PRIMARY\" show-ref --verify --quiet \"refs/heads/$branch\"; then\n    exec \"$WT_REAL_GIT\" -C \"$WT_PRIMARY\" worktree add -- \"$target\" \"$branch\"\n  fi\n  exec \"$WT_REAL_GIT\" -C \"$WT_PRIMARY\" worktree add -b \"$branch\" -- \"$target\" \"$base\"\nfi\n").unwrap();
         fs::set_permissions(&herdr, fs::Permissions::from_mode(0o755)).unwrap();
         if nix {
+            let real_sleep = String::from_utf8(
+                ProcessCommand::new("sh")
+                    .args(["-c", "command -v sleep"])
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap();
+            symlink(real_sleep.trim(), path.join("sleep")).unwrap();
             let exe = path.join("nix");
-            fs::write(&exe, "#!/bin/sh\nprintf 'nix' >> \"$WT_LOG\"\nfor arg in \"$@\"; do printf ' <%s>' \"$arg\" >> \"$WT_LOG\"; done\nprintf '\\n' >> \"$WT_LOG\"\nif [ \"$WT_NIX_FAIL\" = 1 ]; then exit 42; fi\n").unwrap();
+            fs::write(
+                &exe,
+                r#"#!/bin/sh
+printf 'nix' >> "$WT_LOG"
+for arg in "$@"; do
+  printf ' <%s>' "$arg" >> "$WT_LOG"
+  if [ "$WT_NIX_DELAY" = 1 ] && [ "$arg" = store ]; then sleep 0.1; fi
+done
+printf '\n' >> "$WT_LOG"
+if [ "$WT_NIX_FAIL" = 1 ]; then exit 42; fi
+"#,
+            )
+            .unwrap();
             fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
         }
         Self {
@@ -61,6 +82,7 @@ impl FakeTools {
             .env("WT_PRIMARY", cwd)
             .env("WT_HERDR_LIST", "[]")
             .env_remove("WT_SHELL_PATH_FILE")
+            .env_remove("WT_NIX_DELAY")
             .env_remove("HERDR_ENV")
             .env_remove("HERDR_WORKSPACE_ID");
         command
@@ -79,7 +101,7 @@ impl FakeTools {
         while self
             .lines()
             .iter()
-            .filter(|line| line.starts_with("nix "))
+            .filter(|line| *line == "nix <store> <gc>")
             .count()
             < count
         {
@@ -103,6 +125,7 @@ fn active_herdr_resolves_linked_workspace_and_creates_with_exact_arguments() {
         .args(["switch", "-c", "feature/new"])
         .env("HERDR_ENV", "1")
         .env("HERDR_WORKSPACE_ID", "linked-id")
+        .env("WT_NIX_DELAY", "1")
         .env("WT_HERDR_LIST", r#"[{"source_workspace_id":"source-id"}]"#)
         .output()
         .unwrap();
