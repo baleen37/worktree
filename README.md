@@ -26,19 +26,19 @@ Shell integration lets `wt switch` and `wt remove` change the calling shell's di
 
 ### Cargo
 
-After `worktree-cli` v0.1.3 is published to crates.io:
+After `worktree-cli` v0.1.4 is published to crates.io:
 
 ```sh
-cargo install worktree-cli --version 0.1.3 --locked
+cargo install worktree-cli --version 0.1.4 --locked
 ```
 
 ### macOS and Linux
 
-After the `v0.1.3` GitHub Release is published, install that pinned version with the cargo-dist shell installer:
+After the `v0.1.4` GitHub Release is published, install that pinned version with the cargo-dist shell installer:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/baleen37/worktree/releases/download/v0.1.3/worktree-cli-installer.sh | sh
+  https://github.com/baleen37/worktree/releases/download/v0.1.4/worktree-cli-installer.sh | sh
 ```
 
 Linux binaries require glibc 2.35 or newer. Use the Nix flake on older glibc systems or NixOS.
@@ -50,7 +50,7 @@ The installer places `wt` in `CARGO_HOME/bin` (usually `~/.cargo/bin`) and attem
 The shell installer targets macOS and Linux and does not support NixOS. Install from the Nix flake instead:
 
 ```bash
-nix profile install github:baleen37/worktree/v0.1.3
+nix profile install github:baleen37/worktree/v0.1.4
 ```
 
 Home Manager configurations can install the flake package declaratively.
@@ -60,7 +60,7 @@ Home Manager configurations can install the flake package declaratively.
 This example installs the macOS ARM64 archive. On Linux, set `archive` to `worktree-cli-x86_64-unknown-linux-gnu.tar.xz` or `worktree-cli-aarch64-unknown-linux-gnu.tar.xz`. The commands require the GitHub CLI (`gh`).
 
 ```sh
-tag="v0.1.3"
+tag="v0.1.4"
 archive="worktree-cli-aarch64-apple-darwin.tar.xz"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -77,7 +77,7 @@ tar -xf "$tmp_dir/$archive" -C "$tmp_dir/extracted"
 install -m 755 "$tmp_dir/extracted/${archive%.tar.xz}/wt" "$install_dir/wt"
 ```
 
-Replace `v0.1.3` with the release tag you want to install. `gh release download` fetches the unified checksum file and all platform archives so `sha256.sum` can verify every archive.
+Replace `v0.1.4` with the release tag you want to install. `gh release download` fetches the unified checksum file and all platform archives so `sha256.sum` can verify every archive.
 
 ## License
 
