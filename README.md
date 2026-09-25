@@ -79,6 +79,19 @@ install -m 755 "$tmp_dir/extracted/${archive%.tar.xz}/wt" "$install_dir/wt"
 
 Replace `v0.1.3` with the release tag you want to install. `gh release download` fetches the unified checksum file and all platform archives so `sha256.sum` can verify every archive.
 
+## Switching and listing worktrees
+
+`wt list` shows each worktree's path and branch. It adds `[current]` to the worktree for the directory where the command runs, and `[dirty]` when that worktree has staged, unstaged, or untracked changes. Worktrees whose status cannot be read are marked `[status unavailable]`.
+
+`wt switch <branch>` reuses a registered worktree or creates one from a local branch. If the local branch does not exist, `wt` can create a local tracking branch from an already fetched `origin/<branch>` reference:
+
+```sh
+git fetch origin
+wt switch feature/example
+```
+
+`wt switch` does not fetch automatically.
+
 ## License
 
 Licensed under either the MIT License or the Apache License, Version 2.0, at your option.

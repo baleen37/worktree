@@ -251,17 +251,43 @@ pub fn remove(
     Ok(())
 }
 
+fn set_origin_upstream(worktree: &Path, branch: &str) -> Result<()> {
+    let remote_key = format!("branch.{branch}.remote");
+    let merge_key = format!("branch.{branch}.merge");
+    let merge_ref = format!("refs/heads/{branch}");
+    git_text(
+        worktree,
+        &["config", "--local", "--replace-all", &remote_key, "origin"],
+    )?;
+    git_text(
+        worktree,
+        &["config", "--local", "--replace-all", &merge_key, &merge_ref],
+    )?;
+    Ok(())
+}
+
 pub fn switch_existing(
     repo: &RepoContext,
     branch: &str,
     shell_path_file: Option<&Path>,
 ) -> Result<PathBuf> {
     let branch_ref = format!("refs/heads/{branch}");
-    git_text(
+    let (start_point, is_remote_branch) = if git_text(
         &repo.primary_root,
         &["show-ref", "--verify", "--quiet", &branch_ref],
     )
-    .map_err(|_| anyhow::anyhow!("unknown local branch: {branch}"))?;
+    .is_ok()
+    {
+        (branch.to_owned(), false)
+    } else {
+        let remote_ref = format!("refs/remotes/origin/{branch}");
+        git_text(
+            &repo.primary_root,
+            &["show-ref", "--verify", "--quiet", &remote_ref],
+        )
+        .map_err(|_| anyhow::anyhow!("unknown local branch or cached origin branch: {branch}"))?;
+        (remote_ref, true)
+    };
 
     if let Some(entry) = WorktreeInfo::list(repo)?
         .into_iter()
@@ -284,7 +310,29 @@ pub fn switch_existing(
 
     let target_text = target.to_str().context("worktree path is not UTF-8")?;
     if let Some(herdr) = Herdr::active(&repo.primary_root)? {
-        herdr.create(&repo.primary_root, branch, &repo.base_branch, &target)?;
+        let base = if is_remote_branch {
+            &start_point
+        } else {
+            &repo.base_branch
+        };
+        herdr.create(&repo.primary_root, branch, base, &target)?;
+        if is_remote_branch {
+            set_origin_upstream(&target, branch)?;
+        }
+    } else if is_remote_branch {
+        git_text(
+            &repo.primary_root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                "--",
+                target_text,
+                &start_point,
+            ],
+        )?;
+        set_origin_upstream(&target, branch)?;
     } else {
         git_text(
             &repo.primary_root,
