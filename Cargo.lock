@@ -664,8 +664,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9aec5da331524158c6d1a4ac0ab1541149c0b9505fde06423b02f5ef0106b9f0"
 
 [[package]]
-name = "worktree"
-version = "0.1.1"
+name = "worktree-cli"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
