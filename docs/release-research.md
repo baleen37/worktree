@@ -9,8 +9,9 @@
 - NixOS와 선언적 설치: Flake 참조 `github:baleen37/worktree/v0.1.2`
 - 실행 파일 이름은 `wt`를 유지한다. Cargo library 이름은 기존 Rust 코드와의 호환을 위해 `worktree`로 유지한다.
 - cargo-dist 아카이브 접두사는 `worktree-cli-`가 된다. 대상은 `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`다.
+- `nix flake update`는 `nixpkgs-unstable`의 `flake.lock` revision을 갱신한다. Nix 패키지 버전은 `Cargo.toml`에서 읽으므로 앱 버전은 Cargo manifest에서 올린다.
 
-Linux 바이너리는 glibc 2.35 이상을 요구한다. Linux 타깃은 Ubuntu 22.04 runner에서 빌드해 Debian 12에서 실행 가능하게 한다. GitHub Release에는 셸 설치기, SHA256 체크섬, artifact attestation을 포함한다.
+Linux 바이너리는 glibc 2.35 이상을 요구한다. Linux 타깃은 Ubuntu 24.04 hosted runner에서 실행하고 `buildpack-deps:jammy` 컨테이너에서 빌드해 Debian 12와의 호환성을 유지한다. GitHub Release에는 셸 설치기, SHA256 체크섬, artifact attestation을 포함한다.
 
 ## crates.io 게시
 
@@ -28,6 +29,7 @@ Trusted Publisher 등록값:
 ## 검증
 
 - `cargo dist plan`에서 `worktree-cli-` 아카이브 3개, `worktree-cli-installer.sh`, `sha256.sum`, attestation 설정을 확인한다.
+- 계획의 Linux runner가 Ubuntu 24.04이고 Linux 아카이브가 Jammy 컨테이너에서 빌드되는지 확인한다.
 - Rust, 셸 시나리오, 세 Nix system 빌드와 `cargo publish --dry-run --locked`를 통과시킨다.
 - 게시 뒤 Release asset의 체크섬과 각 아카이브 attestation을 확인한다.
 - macOS ARM64와 Linux x86_64/ARM64에서 태그 고정 설치기로 `wt --help`를 확인한다. Nix는 `nix profile install github:baleen37/worktree/v0.1.2`로 확인한다.
