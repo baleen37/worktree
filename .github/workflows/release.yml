@@ -126,7 +126,7 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - name: Install Rust non-interactively if not already installed
-        if: ${{ matrix.container }}
+        if: ${{ matrix.runner == 'ubuntu-24.04' || matrix.runner == 'ubuntu-24.04-arm' }}
         run: |
           if ! command -v cargo > /dev/null 2>&1; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
