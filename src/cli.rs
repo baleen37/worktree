@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::git::RepoContext;
+use crate::git::{RepoContext, git_text};
 use crate::picker;
 use crate::shell::{self, Shell};
 use crate::worktree::{PruneOptions, WorktreeInfo, create_branch, prune, remove, switch_existing};
@@ -91,7 +91,21 @@ pub fn run() -> anyhow::Result<()> {
             let repo = RepoContext::discover(&std::env::current_dir()?)?;
             for entry in WorktreeInfo::list(&repo)? {
                 let branch = entry.branch.as_deref().unwrap_or("(detached HEAD)");
-                println!("{}  {branch}", entry.path.display());
+                let status = git_text(
+                    &entry.path,
+                    &["status", "--porcelain", "--untracked-files=all"],
+                )
+                .ok();
+                let mut markers = String::new();
+                if entry.is_current {
+                    markers.push_str(" [current]");
+                }
+                match status {
+                    Some(status) if !status.is_empty() => markers.push_str(" [dirty]"),
+                    Some(_) => {}
+                    None => markers.push_str(" [status unavailable]"),
+                }
+                println!("{}  {branch}{markers}", entry.path.display());
             }
         }
         Commands::Remove { target } => {

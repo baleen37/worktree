@@ -37,6 +37,96 @@ fn list_shows_primary_and_linked_worktrees_from_either_directory() {
 }
 
 #[test]
+fn list_marks_only_current_and_dirty_worktrees() {
+    let repo = GitRepo::new();
+    let worktrees_root = repo.primary.join(".worktrees");
+    std::fs::create_dir_all(&worktrees_root).unwrap();
+    let unstaged = worktrees_root.join("unstaged");
+    let untracked = worktrees_root.join("untracked");
+    git(&repo.primary, &["branch", "feature/unstaged"]);
+    git(
+        &repo.primary,
+        &[
+            "worktree",
+            "add",
+            unstaged.to_str().unwrap(),
+            "feature/unstaged",
+        ],
+    );
+    git(&repo.primary, &["branch", "feature/untracked"]);
+    git(
+        &repo.primary,
+        &[
+            "worktree",
+            "add",
+            untracked.to_str().unwrap(),
+            "feature/untracked",
+        ],
+    );
+    std::fs::write(repo.primary.join("README.md"), "staged change\n").unwrap();
+    git(&repo.primary, &["add", "README.md"]);
+    std::fs::write(unstaged.join("README.md"), "unstaged change\n").unwrap();
+    std::fs::write(untracked.join("untracked.txt"), "untracked change\n").unwrap();
+
+    let entries = [
+        (&repo.primary, true, true),
+        (&repo.linked, false, false),
+        (&unstaged, false, true),
+        (&untracked, false, true),
+    ];
+    for (cwd, _, _) in entries {
+        let output = Command::cargo_bin("wt")
+            .unwrap()
+            .current_dir(cwd)
+            .args(["list"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        for (path, is_current, is_dirty) in entries {
+            let line = stdout
+                .lines()
+                .find(|line| line.starts_with(path.to_str().unwrap()))
+                .unwrap_or_else(|| panic!("missing worktree {} in {stdout}", path.display()));
+            assert_eq!(line.contains("[current]"), path == cwd, "{line}");
+            assert_eq!(line.contains("[dirty]"), is_dirty, "{line}");
+            assert_eq!(is_current, path == &repo.primary, "test setup for {line}");
+        }
+    }
+}
+
+#[test]
+fn list_preserves_registered_worktrees_without_an_accessible_directory() {
+    let repo = GitRepo::new();
+    std::fs::remove_dir_all(&repo.linked).unwrap();
+
+    let output = Command::cargo_bin("wt")
+        .unwrap()
+        .current_dir(&repo.primary)
+        .args(["list"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let line = stdout
+        .lines()
+        .find(|line| line.starts_with(repo.linked.to_str().unwrap()))
+        .unwrap_or_else(|| panic!("missing registered worktree in {stdout}"));
+    assert!(line.contains("feature/list"), "{line}");
+    assert!(line.contains("[status unavailable]"), "{line}");
+    assert!(!line.contains("[dirty]"), "{line}");
+}
+
+#[test]
 fn discover_uses_local_master_when_main_is_absent() {
     let repo = GitRepo::with_base("master");
     let context = RepoContext::discover(&repo.linked).unwrap();

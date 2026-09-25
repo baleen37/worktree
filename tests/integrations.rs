@@ -194,6 +194,50 @@ fn active_herdr_opens_registered_worktree_and_creates_for_unattached_branch() {
 }
 
 #[test]
+fn active_herdr_creates_remote_branch_from_origin_and_sets_upstream() {
+    let repo = GitRepo::with_origin();
+    git(&repo.primary, &["branch", "feature/remote"]);
+    git(&repo.primary, &["push", "origin", "feature/remote"]);
+    git(&repo.primary, &["branch", "-D", "feature/remote"]);
+    git(&repo.primary, &["fetch", "origin"]);
+    let tools = FakeTools::new(false);
+    let target = repo.primary.join(".worktrees/feature-remote");
+
+    let output = tools
+        .command(&repo.primary)
+        .args(["switch", "feature/remote"])
+        .env("HERDR_ENV", "1")
+        .env("HERDR_WORKSPACE_ID", "source-id")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(tools.lines().contains(&format!(
+        "herdr <worktree> <create> <--workspace> <source-id> <--branch> <feature/remote> <--base> <refs/remotes/origin/feature/remote> <--path> <{}> <--focus>",
+        target.display()
+    )));
+    let upstream = ProcessCommand::new("git")
+        .current_dir(&target)
+        .args([
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ])
+        .output()
+        .unwrap();
+    assert!(upstream.status.success());
+    assert_eq!(
+        String::from_utf8(upstream.stdout).unwrap(),
+        "origin/feature/remote\n"
+    );
+}
+
+#[test]
 fn inactive_herdr_uses_git_and_active_failure_never_falls_back() {
     let repo = GitRepo::new();
     let tools = FakeTools::new(false);
