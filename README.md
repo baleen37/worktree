@@ -8,21 +8,56 @@ wt --help
 
 ## Install
 
-Install with Homebrew:
+### macOS and Linux
 
-```sh
-brew install baleen37/tap/worktree
+After the `v0.1.0` GitHub Release is published, install that pinned version with the cargo-dist shell installer:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/baleen37/worktree/releases/download/v0.1.0/worktree-installer.sh | sh
 ```
 
-For manual installation, download all release assets so the unified `sha256.sum` can check every platform archive. Replace `vX.Y.Z` with the release tag, then verify the checksums and the attestation for your platform archive:
+The installer places `wt` in `CARGO_HOME/bin` (usually `~/.cargo/bin`) and attempts to add that directory to `PATH`. Follow its prompt or restart your shell to refresh `PATH`.
+
+The binary does not change the current shell directory by itself. To enable `wt switch` and `wt remove` to move the calling shell, run:
+
+```bash
+wt config shell install
+```
+
+### NixOS and Nix users
+
+The shell installer targets macOS and Linux and does not support NixOS. Install from the Nix flake instead:
+
+```bash
+nix profile install github:baleen37/worktree/v0.1.0
+```
+
+Home Manager configurations can continue to install the flake package declaratively.
+
+### Manual archive installation
+
+Choose the archive matching your platform. The example below uses macOS ARM64; use `worktree-x86_64-unknown-linux-gnu.tar.xz` or `worktree-aarch64-unknown-linux-gnu.tar.xz` on Linux.
 
 ```sh
-tag="vX.Y.Z"
-gh release download "$tag" --repo baleen37/worktree
-shasum -a 256 -c sha256.sum
-archive="worktree-aarch64-apple-darwin.tar.xz" # choose the archive for your platform
-gh attestation verify "$archive" --repo baleen37/worktree
+tag="v0.1.0"
+archive="worktree-aarch64-apple-darwin.tar.xz"
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+gh release download "$tag" --repo baleen37/worktree --dir "$tmp_dir"
+if command -v sha256sum >/dev/null 2>&1; then
+  (cd "$tmp_dir" && sha256sum -c sha256.sum)
+else
+  (cd "$tmp_dir" && shasum -a 256 -c sha256.sum)
+fi
+gh attestation verify "$tmp_dir/$archive" --repo baleen37/worktree
+install_dir="${CARGO_HOME:-$HOME/.cargo}/bin"
+mkdir -p "$tmp_dir/extracted" "$install_dir"
+tar -xf "$tmp_dir/$archive" -C "$tmp_dir/extracted"
+install -m 755 "$tmp_dir/extracted/${archive%.tar.xz}/wt" "$install_dir/wt"
 ```
+
+Replace `v0.1.0` with the release tag you want to install. `gh release download` fetches the unified checksum file and all platform archives so `sha256.sum` can verify every archive.
 
 ## License
 
