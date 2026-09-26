@@ -81,7 +81,7 @@ Replace `v0.1.4` with the release tag you want to install. `gh release download`
 
 ## Switching and listing worktrees
 
-`wt list` shows each worktree's path and branch. It adds `[current]` to the worktree for the directory where the command runs, and `[dirty]` when that worktree has staged, unstaged, or untracked changes. Worktrees whose status cannot be read are marked `[status unavailable]`.
+`wt list` prints aligned `BRANCH`, `STATUS`, and `PATH` columns. The status shows `current` for the worktree where the command runs, plus `clean`, `dirty`, or `status unavailable`.
 
 `wt switch <branch>` reuses a registered worktree or creates one from a local branch. If the local branch does not exist, `wt` can create a local tracking branch from an already fetched `origin/<branch>` reference:
 
@@ -91,6 +91,8 @@ wt switch feature/example
 ```
 
 `wt switch` does not fetch automatically.
+
+Run `wt merge` from a feature worktree to merge it into the local `main` or `master` worktree. Pass a branch name to choose another target that is already checked out, such as `wt merge release`. Both worktrees must be clean. `wt merge` uses a regular Git merge, without fetching, squashing, or rebasing. After confirming the merge, it removes the source worktree and branch. If a conflict or merge error occurs, both worktrees remain and the conflict stays in the target. Shell integration switches to the target; without it, `wt merge` prints the target path.
 
 ## License
 

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -249,6 +250,100 @@ pub fn remove(
     }
     nix_gc::start();
     Ok(())
+}
+
+pub fn merge(
+    repo: &RepoContext,
+    target: Option<&str>,
+    shell_path_file: Option<&Path>,
+) -> Result<PathBuf> {
+    let entries = WorktreeInfo::list(repo)?;
+    let source = entries
+        .iter()
+        .find(|entry| entry.is_current)
+        .context("current worktree is not registered")?;
+    let source_branch = source
+        .branch
+        .as_deref()
+        .context("cannot merge from a detached HEAD")?;
+    if source.is_primary {
+        bail!("cannot merge from the primary worktree");
+    }
+    if source_branch == repo.base_branch {
+        bail!("cannot merge from the base branch");
+    }
+
+    let target_branch = target.unwrap_or(&repo.base_branch);
+    if source_branch == target_branch {
+        bail!("current branch is already the merge target: {target_branch}");
+    }
+    let target = entries
+        .iter()
+        .find(|entry| entry.branch.as_deref() == Some(target_branch))
+        .with_context(|| {
+            format!("target branch is not checked out in a worktree: {target_branch}")
+        })?;
+    if entries
+        .iter()
+        .any(|entry| entry.path != source.path && entry.path.starts_with(&source.path))
+    {
+        bail!("source worktree contains another registered worktree");
+    }
+
+    for entry in [source, target] {
+        if !git_text(
+            &entry.path,
+            &["status", "--porcelain", "--untracked-files=all"],
+        )?
+        .is_empty()
+        {
+            bail!("worktree is dirty: {}", entry.path.display());
+        }
+    }
+
+    let source_ref = format!("refs/heads/{source_branch}");
+    let output = Command::new("git")
+        .current_dir(&target.path)
+        .args(["merge", "--no-edit", &source_ref])
+        .output()
+        .with_context(|| format!("could not run git merge in {}", target.path.display()))?;
+    if !output.status.success() {
+        let message = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        bail!("git merge failed: {}", message.trim());
+    }
+
+    let target_ref = format!("refs/heads/{target_branch}");
+    let output = Command::new("git")
+        .current_dir(&target.path)
+        .args(["merge-base", "--is-ancestor", &source_ref, &target_ref])
+        .output()
+        .context("could not confirm that the merge completed")?;
+    match output.status.code() {
+        Some(0) => {}
+        Some(1) => bail!("source branch was not merged into target branch: {target_branch}"),
+        _ => bail!(
+            "could not confirm that the merge completed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+    }
+
+    let target_path = target.path.clone();
+    let source_path = source.path.to_str().context("worktree path is not UTF-8")?;
+    std::env::set_current_dir(&target_path)
+        .with_context(|| format!("could not change directory to {}", target_path.display()))?;
+    git_text(
+        &repo.primary_root,
+        &["worktree", "remove", "--", source_path],
+    )?;
+    let _ = git_text(&target_path, &["branch", "--unset-upstream", source_branch]);
+    git_text(&target_path, &["branch", "-d", "--", source_branch])?;
+    write_path(shell_path_file, &target_path)?;
+    nix_gc::start();
+    Ok(target_path)
 }
 
 fn set_origin_upstream(worktree: &Path, branch: &str) -> Result<()> {

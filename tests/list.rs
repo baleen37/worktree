@@ -37,6 +37,37 @@ fn list_shows_primary_and_linked_worktrees_from_either_directory() {
 }
 
 #[test]
+fn list_aligns_branch_status_and_path_columns() {
+    let repo = GitRepo::new();
+    let output = Command::cargo_bin("wt")
+        .unwrap()
+        .current_dir(&repo.linked)
+        .args(["list"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let mut lines = stdout.lines();
+    let header = lines.next().unwrap();
+    assert!(header.starts_with("BRANCH"), "{header}");
+    let status_column = header.find("STATUS").unwrap();
+    let path_column = header.find("PATH").unwrap();
+    let current = lines
+        .find(|line| line.contains("feature/list"))
+        .unwrap_or_else(|| panic!("missing feature/list in {stdout}"));
+    assert_eq!(
+        current.find("current, clean"),
+        Some(status_column),
+        "{current}"
+    );
+    assert_eq!(
+        current.find(repo.linked.to_str().unwrap()),
+        Some(path_column),
+        "{current}"
+    );
+}
+
+#[test]
 fn list_marks_only_current_and_dirty_worktrees() {
     let repo = GitRepo::new();
     let worktrees_root = repo.primary.join(".worktrees");
@@ -90,10 +121,10 @@ fn list_marks_only_current_and_dirty_worktrees() {
         for (path, is_current, is_dirty) in entries {
             let line = stdout
                 .lines()
-                .find(|line| line.starts_with(path.to_str().unwrap()))
+                .find(|line| line.contains(path.to_str().unwrap()))
                 .unwrap_or_else(|| panic!("missing worktree {} in {stdout}", path.display()));
-            assert_eq!(line.contains("[current]"), path == cwd, "{line}");
-            assert_eq!(line.contains("[dirty]"), is_dirty, "{line}");
+            assert_eq!(line.contains("current"), path == cwd, "{line}");
+            assert_eq!(line.contains("dirty"), is_dirty, "{line}");
             assert_eq!(is_current, path == &repo.primary, "test setup for {line}");
         }
     }
@@ -119,11 +150,11 @@ fn list_preserves_registered_worktrees_without_an_accessible_directory() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let line = stdout
         .lines()
-        .find(|line| line.starts_with(repo.linked.to_str().unwrap()))
+        .find(|line| line.contains(repo.linked.to_str().unwrap()))
         .unwrap_or_else(|| panic!("missing registered worktree in {stdout}"));
     assert!(line.contains("feature/list"), "{line}");
-    assert!(line.contains("[status unavailable]"), "{line}");
-    assert!(!line.contains("[dirty]"), "{line}");
+    assert!(line.contains("status unavailable"), "{line}");
+    assert!(!line.contains("dirty"), "{line}");
 }
 
 #[test]

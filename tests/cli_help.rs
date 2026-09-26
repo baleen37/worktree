@@ -10,6 +10,7 @@ fn help_lists_v1_commands() {
         .success()
         .stdout(predicate::str::contains("switch"))
         .stdout(predicate::str::contains("list"))
+        .stdout(predicate::str::contains("merge"))
         .stdout(predicate::str::contains("remove"))
         .stdout(predicate::str::contains("prune"))
         .stdout(predicate::str::contains("config"));
