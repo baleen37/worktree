@@ -3,7 +3,9 @@ use clap::{Parser, Subcommand};
 use crate::git::{RepoContext, git_text};
 use crate::picker;
 use crate::shell::{self, Shell};
-use crate::worktree::{PruneOptions, WorktreeInfo, create_branch, prune, remove, switch_existing};
+use crate::worktree::{
+    PruneOptions, WorktreeInfo, create_branch, merge, prune, remove, switch_existing,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "wt", version, about = "Git worktree manager written in Rust")]
@@ -22,6 +24,8 @@ enum Commands {
     },
     /// List worktrees.
     List,
+    /// Merge the current branch into a target worktree and remove the source worktree.
+    Merge { target: Option<String> },
     /// Remove a worktree.
     Remove { target: Option<String> },
     /// Preview and remove eligible worktrees.
@@ -89,23 +93,61 @@ pub fn run() -> anyhow::Result<()> {
         }
         Commands::List => {
             let repo = RepoContext::discover(&std::env::current_dir()?)?;
-            for entry in WorktreeInfo::list(&repo)? {
-                let branch = entry.branch.as_deref().unwrap_or("(detached HEAD)");
-                let status = git_text(
-                    &entry.path,
-                    &["status", "--porcelain", "--untracked-files=all"],
-                )
-                .ok();
-                let mut markers = String::new();
-                if entry.is_current {
-                    markers.push_str(" [current]");
-                }
-                match status {
-                    Some(status) if !status.is_empty() => markers.push_str(" [dirty]"),
-                    Some(_) => {}
-                    None => markers.push_str(" [status unavailable]"),
-                }
-                println!("{}  {branch}{markers}", entry.path.display());
+            let rows: Vec<_> = WorktreeInfo::list(&repo)?
+                .into_iter()
+                .map(|entry| {
+                    let status = git_text(
+                        &entry.path,
+                        &["status", "--porcelain", "--untracked-files=all"],
+                    )
+                    .map(|status| if status.is_empty() { "clean" } else { "dirty" })
+                    .unwrap_or("status unavailable");
+                    let status = if entry.is_current {
+                        format!("current, {status}")
+                    } else {
+                        status.to_owned()
+                    };
+                    (
+                        entry
+                            .branch
+                            .as_deref()
+                            .unwrap_or("(detached HEAD)")
+                            .to_owned(),
+                        status,
+                        entry.path,
+                    )
+                })
+                .collect();
+            let branch_width = rows
+                .iter()
+                .map(|(branch, _, _)| branch.chars().count())
+                .max()
+                .unwrap_or(0)
+                .max("BRANCH".len());
+            let status_width = rows
+                .iter()
+                .map(|(_, status, _)| status.chars().count())
+                .max()
+                .unwrap_or(0)
+                .max("STATUS".len());
+            println!(
+                "{:<branch_width$}  {:<status_width$}  PATH",
+                "BRANCH", "STATUS"
+            );
+            for (branch, status, path) in rows {
+                println!(
+                    "{branch:<branch_width$}  {status:<status_width$}  {}",
+                    path.display()
+                );
+            }
+        }
+        Commands::Merge { target } => {
+            let repo = RepoContext::discover(&std::env::current_dir()?)?;
+            let shell_path_file =
+                std::env::var_os("WT_SHELL_PATH_FILE").map(std::path::PathBuf::from);
+            let path = merge(&repo, target.as_deref(), shell_path_file.as_deref())?;
+            if shell_path_file.is_none() {
+                println!("{}", path.display());
             }
         }
         Commands::Remove { target } => {
