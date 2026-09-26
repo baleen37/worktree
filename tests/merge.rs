@@ -22,6 +22,8 @@ impl Repo {
         let primary = root.join("primary");
         let source = root.join("source");
         git(&root, &["init", "-b", "main", primary.to_str().unwrap()]);
+        git(&primary, &["config", "user.name", "Test"]);
+        git(&primary, &["config", "user.email", "test@example.com"]);
         std::fs::write(primary.join("README.md"), "initial\n").unwrap();
         git(&primary, &["add", "."]);
         commit(&primary, "initial");
