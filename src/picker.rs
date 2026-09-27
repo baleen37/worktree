@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
-use dialoguer::FuzzySelect;
+use dialoguer::{FuzzySelect, theme::ColorfulTheme};
 
 use crate::git::RepoContext;
 use crate::shell::write_path;
-use crate::worktree::WorktreeInfo;
+use crate::worktree::{WorktreeInfo, worktree_labels};
 
 pub(crate) fn select(
     repo: &RepoContext,
@@ -15,17 +15,19 @@ pub(crate) fn select(
         bail!("worktree picker requires a TTY");
     }
     let entries = WorktreeInfo::list(repo)?;
-    let labels: Vec<_> = entries
-        .iter()
-        .map(|entry| {
-            format!(
-                "{}  {}",
-                entry.path.display(),
-                entry.branch.as_deref().unwrap_or("(detached HEAD)")
-            )
-        })
-        .collect();
-    let choice = FuzzySelect::new().items(&labels).interact_opt()?;
+    let terminal_width = console::Term::stderr().size().1 as usize;
+    let labels = worktree_labels(repo, &entries, terminal_width, 2, false);
+    let prompt = console::truncate_str(
+        "Switch worktree · type to filter",
+        terminal_width.saturating_sub(4),
+        "…",
+    )
+    .into_owned();
+    let theme = ColorfulTheme::default();
+    let choice = FuzzySelect::with_theme(&theme)
+        .with_prompt(prompt)
+        .items(&labels.rows)
+        .interact_opt()?;
     let selected = choice.map(|index| entries[index].path.clone());
     if let Some(path) = &selected {
         write_path(shell_path_file, path)?;
