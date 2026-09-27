@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use console::{Style, measure_text_width, truncate_str};
 
 use crate::git::{RepoContext, git_text};
-use crate::integrations::{herdr::Herdr, nix_gc};
+use crate::integrations::{herdr::Herdr, nix};
 use crate::shell::write_path;
 
 pub struct WorktreeInfo {
@@ -378,7 +378,7 @@ pub fn prune(repo: &RepoContext, options: PruneOptions) -> Result<PruneOutcome> 
         outcome.removed.push(path);
     }
     if !outcome.removed.is_empty() {
-        nix_gc::start();
+        nix::start();
     }
     Ok(outcome)
 }
@@ -457,7 +457,7 @@ pub fn remove(
             git_text(base_path, &["branch", "-d", branch])?;
         }
     }
-    nix_gc::start();
+    nix::start();
     Ok(())
 }
 
@@ -551,7 +551,7 @@ pub fn merge(
     let _ = git_text(&target_path, &["branch", "--unset-upstream", source_branch]);
     git_text(&target_path, &["branch", "-d", "--", source_branch])?;
     write_path(shell_path_file, &target_path)?;
-    nix_gc::start();
+    nix::start();
     Ok(target_path)
 }
 
@@ -643,7 +643,7 @@ pub fn switch_existing(
             &["worktree", "add", "--", target_text, branch],
         )?;
     }
-    nix_gc::start();
+    nix::start();
     write_path(shell_path_file, &target)?;
     Ok(target)
 }
@@ -707,7 +707,7 @@ pub fn create_branch(
             ],
         )?;
     }
-    nix_gc::start();
+    nix::start();
     write_path(shell_path_file, &target)?;
     Ok(target)
 }
