@@ -160,10 +160,7 @@ fn truncate_path(path: &str, width: usize) -> String {
         return String::new();
     }
 
-    let basename = path
-        .rsplit(|character| character == '/' || character == '\\')
-        .next()
-        .unwrap_or(path);
+    let basename = path.rsplit(['/', '\\']).next().unwrap_or(path);
     if width <= measure_text_width("…/") + 1 {
         return truncate_middle(path, width);
     }
