@@ -1,10 +1,11 @@
 use clap::{Parser, Subcommand};
 
-use crate::git::{RepoContext, git_text};
+use crate::git::RepoContext;
 use crate::picker;
 use crate::shell::{self, Shell};
 use crate::worktree::{
     PruneOptions, WorktreeInfo, create_branch, merge, prune, remove, switch_existing,
+    worktree_labels,
 };
 
 #[derive(Debug, Parser)]
@@ -30,9 +31,12 @@ enum Commands {
     Remove { target: Option<String> },
     /// Preview and remove eligible worktrees.
     Prune {
-        /// Include clean unmerged worktrees older than 30 days.
+        /// Deprecated alias for the default three-day cleanup.
         #[arg(long)]
         stale: bool,
+        /// Remove all clean registered worktrees except the primary, base, and current worktrees.
+        #[arg(long)]
+        all: bool,
         /// Remove without confirmation.
         #[arg(long)]
         yes: bool,
@@ -93,52 +97,12 @@ pub fn run() -> anyhow::Result<()> {
         }
         Commands::List => {
             let repo = RepoContext::discover(&std::env::current_dir()?)?;
-            let rows: Vec<_> = WorktreeInfo::list(&repo)?
-                .into_iter()
-                .map(|entry| {
-                    let status = git_text(
-                        &entry.path,
-                        &["status", "--porcelain", "--untracked-files=all"],
-                    )
-                    .map(|status| if status.is_empty() { "clean" } else { "dirty" })
-                    .unwrap_or("status unavailable");
-                    let status = if entry.is_current {
-                        format!("current, {status}")
-                    } else {
-                        status.to_owned()
-                    };
-                    (
-                        entry
-                            .branch
-                            .as_deref()
-                            .unwrap_or("(detached HEAD)")
-                            .to_owned(),
-                        status,
-                        entry.path,
-                    )
-                })
-                .collect();
-            let branch_width = rows
-                .iter()
-                .map(|(branch, _, _)| branch.chars().count())
-                .max()
-                .unwrap_or(0)
-                .max("BRANCH".len());
-            let status_width = rows
-                .iter()
-                .map(|(_, status, _)| status.chars().count())
-                .max()
-                .unwrap_or(0)
-                .max("STATUS".len());
-            println!(
-                "{:<branch_width$}  {:<status_width$}  PATH",
-                "BRANCH", "STATUS"
-            );
-            for (branch, status, path) in rows {
-                println!(
-                    "{branch:<branch_width$}  {status:<status_width$}  {}",
-                    path.display()
-                );
+            let entries = WorktreeInfo::list(&repo)?;
+            let terminal_width = console::Term::stdout().size().1 as usize;
+            let labels = worktree_labels(&repo, &entries, terminal_width, 0, true);
+            println!("{}", labels.header);
+            for row in labels.rows {
+                println!("{row}");
             }
         }
         Commands::Merge { target } => {
@@ -156,9 +120,12 @@ pub fn run() -> anyhow::Result<()> {
                 std::env::var_os("WT_SHELL_PATH_FILE").map(std::path::PathBuf::from);
             remove(&repo, target.as_deref(), shell_path_file.as_deref())?;
         }
-        Commands::Prune { stale, yes } => {
+        Commands::Prune { stale, all, yes } => {
             let repo = RepoContext::discover(&std::env::current_dir()?)?;
-            prune(&repo, PruneOptions { stale, yes })?;
+            if stale {
+                eprintln!("warning: --stale is deprecated; it is now the default behavior");
+            }
+            prune(&repo, PruneOptions { all, yes })?;
         }
         Commands::Config { command } => match command {
             ConfigCommands::Shell { command } => match command {

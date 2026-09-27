@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use console::{Style, measure_text_width, truncate_str};
 
 use crate::git::{RepoContext, git_text};
 use crate::integrations::{herdr::Herdr, nix_gc};
@@ -14,6 +15,160 @@ pub struct WorktreeInfo {
     pub branch: Option<String>,
     pub is_primary: bool,
     pub is_current: bool,
+}
+
+pub(crate) fn display_path(repo: &RepoContext, path: &Path) -> String {
+    match path.strip_prefix(&repo.primary_root) {
+        Ok(relative) if relative.as_os_str().is_empty() => ".".to_owned(),
+        Ok(relative) => relative.display().to_string(),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+pub(crate) struct WorktreeLabels {
+    pub header: String,
+    pub rows: Vec<String>,
+}
+
+pub(crate) fn worktree_labels(
+    repo: &RepoContext,
+    entries: &[WorktreeInfo],
+    terminal_width: usize,
+    selector_prefix: usize,
+    colorize: bool,
+) -> WorktreeLabels {
+    let content_width = terminal_width.saturating_sub(selector_prefix);
+    let current_marker = if content_width < 56 { "*" } else { "[current]" };
+    let rows: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            (
+                if entry.is_current { current_marker } else { "" },
+                entry.branch.as_deref().unwrap_or("(detached HEAD)"),
+                entry.status(),
+                display_path(repo, &entry.path),
+            )
+        })
+        .collect();
+    let here_width = measure_text_width(current_marker).max(measure_text_width("HERE"));
+    let branch_limit = rows
+        .iter()
+        .map(|(_, branch, _, _)| measure_text_width(branch))
+        .max()
+        .unwrap_or(0)
+        .max(measure_text_width("BRANCH"));
+    let status_width = rows
+        .iter()
+        .map(|(_, _, status, _)| measure_text_width(status))
+        .max()
+        .unwrap_or(0)
+        .max(measure_text_width("STATUS"));
+    let branch_and_path_width = content_width.saturating_sub(here_width + 6 + status_width);
+    let path_reserve = (branch_and_path_width / 2).min(16);
+    let branch_width = branch_limit
+        .min(32)
+        .min(branch_and_path_width.saturating_sub(path_reserve).max(1));
+    let path_width = branch_and_path_width.saturating_sub(branch_width);
+
+    let header = format!(
+        "{}  {}  {}  PATH",
+        pad_to_width("HERE", here_width),
+        pad_to_width(&truncate_middle("BRANCH", branch_width), branch_width),
+        pad_to_width(&truncate_str("STATUS", status_width, "…"), status_width),
+    );
+    let header = truncate_str(&header, content_width, "…").into_owned();
+    let header = style_cell(&header, colorize, Style::new().bold());
+    let rows = rows
+        .into_iter()
+        .map(|(here, branch, status, path)| {
+            let branch = truncate_middle(branch, branch_width);
+            let path = truncate_path(&path, path_width);
+            let row = format!(
+                "{}  {}  {}  {}",
+                style_cell(
+                    &pad_to_width(here, here_width),
+                    colorize,
+                    Style::new().cyan().bold(),
+                ),
+                pad_to_width(&branch, branch_width),
+                style_cell(
+                    &pad_to_width(status, status_width),
+                    colorize,
+                    status_style(status),
+                ),
+                style_cell(&path, colorize, Style::new().dim()),
+            );
+            truncate_str(&row, content_width, "…").into_owned()
+        })
+        .collect();
+
+    WorktreeLabels { header, rows }
+}
+
+fn pad_to_width(text: &str, width: usize) -> String {
+    let mut padded = text.to_owned();
+    padded.push_str(&" ".repeat(width.saturating_sub(measure_text_width(text))));
+    padded
+}
+
+fn style_cell(text: &str, colorize: bool, style: Style) -> String {
+    if colorize {
+        style.apply_to(text).to_string()
+    } else {
+        text.to_owned()
+    }
+}
+
+fn status_style(status: &str) -> Style {
+    match status {
+        "clean" => Style::new().green(),
+        "dirty" => Style::new().yellow().bold(),
+        _ => Style::new().red(),
+    }
+}
+
+fn truncate_middle(text: &str, width: usize) -> String {
+    if measure_text_width(text) <= width {
+        return text.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    if width == 1 {
+        return "…".to_owned();
+    }
+
+    let kept_width = width - measure_text_width("…");
+    let prefix_width = kept_width.div_ceil(2);
+    let prefix = truncate_str(text, prefix_width, "").into_owned();
+    let suffix_width = kept_width.saturating_sub(measure_text_width(&prefix));
+    let mut suffix_start = text.len();
+    for (index, _) in text.char_indices().rev() {
+        if measure_text_width(&text[index..]) > suffix_width {
+            break;
+        }
+        suffix_start = index;
+    }
+    format!("{prefix}…{}", &text[suffix_start..])
+}
+
+fn truncate_path(path: &str, width: usize) -> String {
+    if measure_text_width(path) <= width {
+        return path.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+
+    let basename = path
+        .rsplit(|character| character == '/' || character == '\\')
+        .next()
+        .unwrap_or(path);
+    if width <= measure_text_width("…/") + 1 {
+        return truncate_middle(path, width);
+    }
+    let basename_width = width - measure_text_width("…/");
+    format!("…/{}", truncate_middle(basename, basename_width))
 }
 
 impl WorktreeInfo {
@@ -28,16 +183,28 @@ impl WorktreeInfo {
         }
         Ok(entries)
     }
+
+    pub(crate) fn status(&self) -> &'static str {
+        match git_text(
+            &self.path,
+            &["status", "--porcelain", "--untracked-files=all"],
+        ) {
+            Ok(status) if status.is_empty() => "clean",
+            Ok(_) => "dirty",
+            Err(_) => "status unavailable",
+        }
+    }
 }
 
 pub struct PruneOptions {
-    pub stale: bool,
+    pub all: bool,
     pub yes: bool,
 }
 
 pub struct PruneOutcome {
     pub safe: usize,
     pub stale: usize,
+    pub all: usize,
     pub keep: usize,
     pub candidates: Vec<PathBuf>,
     pub removed: Vec<PathBuf>,
@@ -47,7 +214,41 @@ pub struct PruneOutcome {
 enum PruneClass {
     Safe,
     Stale,
+    All,
     Keep,
+}
+
+const PRUNE_AGE: Duration = Duration::from_secs(3 * 24 * 60 * 60);
+
+fn effective_creation_time(
+    created_at: Option<SystemTime>,
+    modified_at: impl FnOnce() -> Result<SystemTime>,
+) -> Result<SystemTime> {
+    match created_at {
+        Some(created_at) => Ok(created_at),
+        None => modified_at(),
+    }
+}
+
+fn old_enough(now: SystemTime, created_at: SystemTime, checkout_time: SystemTime) -> bool {
+    now.duration_since(created_at.max(checkout_time))
+        .is_ok_and(|age| age >= PRUNE_AGE)
+}
+
+fn checkout_time(path: &Path) -> Result<SystemTime> {
+    let timestamp: i64 = git_text(path, &["log", "-1", "--format=%ct", "HEAD"])?
+        .parse()
+        .context("Git returned an invalid checkout commit timestamp")?;
+    let duration = Duration::from_secs(timestamp.unsigned_abs());
+    if timestamp >= 0 {
+        SystemTime::UNIX_EPOCH
+            .checked_add(duration)
+            .context("checkout commit timestamp is out of range")
+    } else {
+        SystemTime::UNIX_EPOCH
+            .checked_sub(duration)
+            .context("checkout commit timestamp is out of range")
+    }
 }
 
 fn merged_into_base(repo: &RepoContext, branch: &str) -> Result<bool> {
@@ -68,58 +269,61 @@ fn merged_into_base(repo: &RepoContext, branch: &str) -> Result<bool> {
     }
 }
 
-fn classify(repo: &RepoContext, entry: &WorktreeInfo) -> Result<PruneClass> {
+fn classify(
+    repo: &RepoContext,
+    entry: &WorktreeInfo,
+    options: &PruneOptions,
+    now: SystemTime,
+) -> Result<PruneClass> {
     if entry.is_primary || entry.is_current || entry.branch.as_deref() == Some(&repo.base_branch) {
         return Ok(PruneClass::Keep);
+    }
+    if entry.status() != "clean" {
+        return Ok(PruneClass::Keep);
+    }
+    if options.all {
+        return Ok(PruneClass::All);
     }
     let Some(branch) = entry.branch.as_deref() else {
         return Ok(PruneClass::Keep);
     };
-    if !git_text(
-        &entry.path,
-        &["status", "--porcelain", "--untracked-files=all"],
-    )?
-    .is_empty()
-    {
+    let merged = merged_into_base(repo, branch)?;
+    let metadata = std::fs::metadata(&entry.path)?;
+    let created_at = effective_creation_time(metadata.created().ok(), || Ok(metadata.modified()?))?;
+    if !old_enough(now, created_at, checkout_time(&entry.path)?) {
         return Ok(PruneClass::Keep);
     }
-    if merged_into_base(repo, branch)? {
-        return Ok(PruneClass::Safe);
-    }
-    let age = SystemTime::now()
-        .duration_since(std::fs::metadata(&entry.path)?.modified()?)
-        .unwrap_or_default();
-    if age >= Duration::from_secs(30 * 24 * 60 * 60) {
-        Ok(PruneClass::Stale)
+    Ok(if merged {
+        PruneClass::Safe
     } else {
-        Ok(PruneClass::Keep)
-    }
+        PruneClass::Stale
+    })
 }
 
-fn preview(repo: &RepoContext, options: &PruneOptions) -> Result<PruneOutcome> {
+fn preview_at(repo: &RepoContext, options: &PruneOptions, now: SystemTime) -> Result<PruneOutcome> {
     let entries = WorktreeInfo::list(repo)?;
     let classes = entries
         .iter()
-        .map(|entry| classify(repo, entry))
+        .map(|entry| classify(repo, entry, options, now))
         .collect::<Result<Vec<_>>>()?;
     let mut candidates = Vec::new();
     let mut safe = 0;
     let mut stale = 0;
+    let mut all = 0;
     let mut keep = 0;
     for (entry, class) in entries.iter().zip(&classes) {
-        let eligible = *class == PruneClass::Safe || (*class == PruneClass::Stale && options.stale);
         let contains_preserved = entries.iter().zip(&classes).any(|(other, other_class)| {
             other.path != entry.path
                 && other.path.starts_with(&entry.path)
-                && (*other_class == PruneClass::Keep
-                    || (*other_class == PruneClass::Stale && !options.stale))
+                && *other_class == PruneClass::Keep
         });
-        if !eligible || contains_preserved {
+        if *class == PruneClass::Keep || contains_preserved {
             keep += 1;
         } else {
             match class {
                 PruneClass::Safe => safe += 1,
                 PruneClass::Stale => stale += 1,
+                PruneClass::All => all += 1,
                 PruneClass::Keep => unreachable!(),
             }
             candidates.push(entry.path.clone());
@@ -129,16 +333,24 @@ fn preview(repo: &RepoContext, options: &PruneOptions) -> Result<PruneOutcome> {
     Ok(PruneOutcome {
         safe,
         stale,
+        all,
         keep,
         candidates,
         removed: Vec::new(),
     })
 }
 
+fn preview(repo: &RepoContext, options: &PruneOptions) -> Result<PruneOutcome> {
+    preview_at(repo, options, SystemTime::now())
+}
+
 pub fn prune(repo: &RepoContext, options: PruneOptions) -> Result<PruneOutcome> {
     let mut outcome = preview(repo, &options)?;
     println!("safe: {}", outcome.safe);
     println!("stale: {}", outcome.stale);
+    if options.all {
+        println!("all: {}", outcome.all);
+    }
     println!("keep: {}", outcome.keep);
     for path in &outcome.candidates {
         println!("remove: {}", path.display());
@@ -617,6 +829,200 @@ pub(crate) fn parse_porcelain(text: &str) -> Result<Vec<WorktreeInfo>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_labels_fit_terminal_width_and_shorten_long_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let primary_root = temp.path().join("primary");
+        std::fs::create_dir(&primary_root).unwrap();
+        let repo = RepoContext {
+            primary_root: primary_root.clone(),
+            common_dir: primary_root.join(".git"),
+            base_branch: "main".to_owned(),
+            current_root: primary_root.clone(),
+        };
+        let entries = [
+            WorktreeInfo {
+                path: primary_root.clone(),
+                branch: Some("feature/with/a/very/long/branch/name".to_owned()),
+                is_primary: true,
+                is_current: true,
+            },
+            WorktreeInfo {
+                path: temp
+                    .path()
+                    .join("another directory")
+                    .join("linked worktree with a long name"),
+                branch: Some("feature/another/long/branch/name".to_owned()),
+                is_primary: false,
+                is_current: false,
+            },
+        ];
+        let labels = worktree_labels(&repo, &entries, 72, 0, false);
+
+        assert!(
+            measure_text_width(&labels.header) <= 72,
+            "{}",
+            labels.header
+        );
+        assert!(
+            labels.rows.iter().all(|row| measure_text_width(row) <= 72),
+            "{:#?}",
+            labels.rows
+        );
+        assert!(labels.rows[0].contains("[current]"), "{}", labels.rows[0]);
+        assert!(labels.rows[1].contains('…'), "{}", labels.rows[1]);
+
+        let narrow = worktree_labels(&repo, &entries, 40, 0, false);
+        assert!(narrow.rows[0].starts_with('*'), "{}", narrow.rows[0]);
+        assert!(
+            narrow.rows.iter().all(|row| measure_text_width(row) <= 40),
+            "{:#?}",
+            narrow.rows
+        );
+    }
+
+    #[test]
+    fn middle_truncation_keeps_branch_and_path_ends_visible() {
+        assert_eq!(
+            truncate_middle("feature/long/branch/name/for/screen-check", 28),
+            "feature/long/b…/screen-check"
+        );
+        assert_eq!(
+            truncate_path("/root/linked worktree with a very long directory name", 16),
+            "…/linked …y name"
+        );
+    }
+
+    #[test]
+    fn prune_age_uses_the_newer_timestamp_and_includes_the_72_hour_boundary() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10 * PRUNE_AGE.as_secs());
+        let boundary = now - PRUNE_AGE;
+
+        assert!(old_enough(now, boundary, boundary));
+        assert!(!old_enough(
+            now,
+            boundary + Duration::from_secs(1),
+            SystemTime::UNIX_EPOCH
+        ));
+        assert!(!old_enough(
+            now,
+            SystemTime::UNIX_EPOCH,
+            boundary + Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn missing_creation_timestamp_falls_back_to_directory_modification_time() {
+        let modified_at = SystemTime::UNIX_EPOCH + Duration::from_secs(123);
+        let created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(456);
+
+        let mut read_modification_time = false;
+        assert_eq!(
+            effective_creation_time(Some(created_at), || {
+                read_modification_time = true;
+                Ok(modified_at)
+            })
+            .unwrap(),
+            created_at
+        );
+        assert!(!read_modification_time);
+        assert_eq!(
+            effective_creation_time(None, || {
+                read_modification_time = true;
+                Ok(modified_at)
+            })
+            .unwrap(),
+            modified_at
+        );
+        assert!(read_modification_time);
+    }
+
+    #[test]
+    fn default_prune_selects_matured_merged_and_unmerged_worktrees() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let primary = root.join("primary");
+        let base = root.join("base");
+        let merged = root.join("merged");
+        let unmerged = root.join("unmerged");
+        git_text(&root, &["init", "-b", "parking", primary.to_str().unwrap()]).unwrap();
+        git_text(
+            &primary,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        )
+        .unwrap();
+        git_text(&primary, &["branch", "main"]).unwrap();
+        git_text(
+            &primary,
+            &["worktree", "add", base.to_str().unwrap(), "main"],
+        )
+        .unwrap();
+        git_text(
+            &primary,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature/merged",
+                merged.to_str().unwrap(),
+                "main",
+            ],
+        )
+        .unwrap();
+        git_text(
+            &primary,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature/unmerged",
+                unmerged.to_str().unwrap(),
+                "main",
+            ],
+        )
+        .unwrap();
+        git_text(
+            &unmerged,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "unmerged",
+            ],
+        )
+        .unwrap();
+
+        let repo = RepoContext::discover(&base).unwrap();
+        let outcome = preview_at(
+            &repo,
+            &PruneOptions {
+                all: false,
+                yes: true,
+            },
+            SystemTime::now() + PRUNE_AGE + Duration::from_secs(1),
+        )
+        .unwrap();
+
+        assert_eq!(outcome.safe, 1);
+        assert_eq!(outcome.stale, 1);
+        assert_eq!(outcome.keep, 2);
+        assert!(outcome.candidates.contains(&merged));
+        assert!(outcome.candidates.contains(&unmerged));
+    }
 
     #[test]
     fn five_generated_collisions_stop_without_a_new_path() {

@@ -104,16 +104,8 @@ fn unmerged_change(path: &Path, name: &str) {
     commit(path, name);
 }
 
-fn old_directory(path: &Path) {
-    let status = ProcessCommand::new("touch")
-        .args(["-t", "202001010000", path.to_str().unwrap()])
-        .status()
-        .unwrap();
-    assert!(status.success());
-}
-
 #[test]
-fn non_tty_previews_merged_clean_candidate_without_removing_it() {
+fn non_tty_previews_a_young_merged_worktree_without_removing_it() {
     let repo = Repo::new();
     let candidate = repo.primary.parent().unwrap().join("merged");
     repo.worktree("feature/merged", &candidate);
@@ -125,25 +117,42 @@ fn non_tty_previews_merged_clean_candidate_without_removing_it() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("safe: 1"), "{stdout}");
+    assert!(stdout.contains("safe: 0"), "{stdout}");
     assert!(stdout.contains("stale: 0"), "{stdout}");
-    assert!(stdout.contains("keep: 2"), "{stdout}");
-    assert!(stdout.contains(candidate.to_str().unwrap()), "{stdout}");
+    assert!(stdout.contains("keep: 3"), "{stdout}");
+    assert!(!stdout.contains("remove:"), "{stdout}");
     assert!(candidate.exists());
 }
 
 #[test]
-fn stale_is_opt_in_and_yes_removes_only_eligible_worktrees() {
+fn non_tty_all_previews_a_candidate_without_removing_it() {
+    let repo = Repo::new();
+    let candidate = repo.primary.parent().unwrap().join("candidate");
+    repo.worktree("feature/candidate", &candidate);
+
+    let output = repo.run(&["prune", "--all"]);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("all: 1"), "{text}");
+    assert!(text.contains("keep: 2"), "{text}");
+    assert!(
+        text.contains(&format!("remove: {}", candidate.display())),
+        "{text}"
+    );
+    assert!(text.contains("dry run"), "{text}");
+    assert!(candidate.exists());
+}
+
+#[test]
+fn default_waits_three_days_for_merged_and_unmerged_worktrees() {
     let repo = Repo::new();
     let root = repo.primary.parent().unwrap();
-    let safe = root.join("safe");
-    let young = root.join("young");
-    let old = root.join("old");
+    let merged = root.join("merged");
+    let unmerged = root.join("unmerged");
     let dirty = root.join("dirty");
     let detached = root.join("detached");
-    repo.worktree("feature/safe", &safe);
-    repo.worktree("feature/young", &young);
-    repo.worktree("feature/old", &old);
+    repo.worktree("feature/merged", &merged);
+    repo.worktree("feature/unmerged", &unmerged);
     repo.worktree("feature/dirty", &dirty);
     git(
         &repo.primary,
@@ -155,43 +164,83 @@ fn stale_is_opt_in_and_yes_removes_only_eligible_worktrees() {
             "main",
         ],
     );
-    unmerged_change(&young, "young-change");
-    unmerged_change(&old, "old-change");
-    old_directory(&old);
+    unmerged_change(&unmerged, "unmerged-change");
     std::fs::write(dirty.join("untracked"), "keep\n").unwrap();
 
     let preview = repo.run(&["prune"]);
+    assert!(preview.status.success());
     let text = String::from_utf8(preview.stdout).unwrap();
-    assert!(text.contains("safe: 1"), "{text}");
+    assert!(text.contains("safe: 0"), "{text}");
     assert!(text.contains("stale: 0"), "{text}");
     assert!(text.contains("keep: 6"), "{text}");
-    assert!(text.contains(safe.to_str().unwrap()), "{text}");
-    assert!(
-        !text.contains(&format!("remove: {}", old.display())),
-        "{text}"
-    );
+    assert!(!text.contains("remove:"), "{text}");
 
-    let preview = repo.run(&["prune", "--stale"]);
-    let text = String::from_utf8(preview.stdout).unwrap();
-    assert!(text.contains("safe: 1"), "{text}");
-    assert!(text.contains("stale: 1"), "{text}");
-    assert!(text.contains("keep: 5"), "{text}");
+    let alias = repo.run(&["prune", "--stale", "--yes"]);
     assert!(
-        text.contains(&format!("remove: {}", old.display())),
-        "{text}"
-    );
-    assert!(old.exists());
-
-    let removed = repo.run(&["prune", "--stale", "--yes"]);
-    assert!(
-        removed.status.success(),
+        alias.status.success(),
         "{}",
-        String::from_utf8_lossy(&removed.stderr)
+        String::from_utf8_lossy(&alias.stderr)
     );
-    assert!(!safe.exists());
-    assert!(!old.exists());
-    for path in [&repo.primary, &repo.base, &young, &dirty, &detached] {
+    assert!(String::from_utf8_lossy(&alias.stderr).contains("deprecated"));
+    for path in [
+        &repo.primary,
+        &repo.base,
+        &merged,
+        &unmerged,
+        &dirty,
+        &detached,
+    ] {
         assert!(path.exists(), "{}", path.display());
+    }
+}
+
+#[test]
+fn all_removes_clean_external_and_detached_worktrees_but_keeps_branches_and_protected_paths() {
+    let repo = Repo::new();
+    let root = repo.primary.parent().unwrap();
+    let merged = root.join("external-merged");
+    let unmerged = root.join("external-unmerged");
+    let dirty = root.join("external-dirty");
+    let detached = root.join("external-detached");
+    repo.worktree("feature/merged", &merged);
+    repo.worktree("feature/unmerged", &unmerged);
+    repo.worktree("feature/dirty", &dirty);
+    unmerged_change(&unmerged, "unmerged-change");
+    std::fs::write(dirty.join("untracked"), "keep\n").unwrap();
+    git(
+        &repo.primary,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            detached.to_str().unwrap(),
+            "main",
+        ],
+    );
+
+    let output = repo.run(&["prune", "--all", "--yes"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("all: 3"), "{text}");
+    assert!(text.contains("keep: 3"), "{text}");
+    for path in [&merged, &unmerged, &detached] {
+        assert!(!path.exists(), "{}", path.display());
+    }
+    for path in [&repo.primary, &repo.base, &dirty] {
+        assert!(path.exists(), "{}", path.display());
+    }
+    for branch in ["feature/merged", "feature/unmerged"] {
+        let reference = format!("refs/heads/{branch}");
+        let output = ProcessCommand::new("git")
+            .current_dir(&repo.primary)
+            .args(["show-ref", "--verify", "--quiet", &reference])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "branch was removed: {branch}");
     }
 }
 
@@ -204,7 +253,7 @@ fn current_worktree_is_preserved_even_when_merged_and_clean() {
         .wt
         .command()
         .current_dir(&current)
-        .args(["prune", "--yes"])
+        .args(["prune", "--all", "--yes"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -226,15 +275,15 @@ fn candidate_containing_preserved_worktree_is_kept() {
     repo.worktree("feature/outer", &outer);
     let nested = outer.join("nested");
     repo.worktree("feature/nested", &nested);
-    unmerged_change(&nested, "nested-change");
-    let output = repo.run(&["prune", "--yes"]);
+    std::fs::write(nested.join("nested-change"), "keep\n").unwrap();
+    let output = repo.run(&["prune", "--all", "--yes"]);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
     let text = String::from_utf8(output.stdout).unwrap();
-    assert!(text.contains("safe: 0"), "{text}");
+    assert!(text.contains("all: 0"), "{text}");
     assert!(text.contains("keep: 4"), "{text}");
     assert!(outer.exists() && nested.exists());
 }
@@ -249,12 +298,20 @@ fn nested_candidates_are_removed_from_descendant_to_ancestor() {
     repo.worktree("feature/outer", &outer);
     let nested = outer.join("nested");
     repo.worktree("feature/nested", &nested);
-    let output = repo.run(&["prune", "--yes"]);
+    let output = repo.run(&["prune", "--all", "--yes"]);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let text = String::from_utf8(output.stdout).unwrap();
+    let nested_removal = text
+        .find(&format!("remove: {}\n", nested.display()))
+        .unwrap();
+    let outer_removal = text
+        .find(&format!("remove: {}\n", outer.display()))
+        .unwrap();
+    assert!(nested_removal < outer_removal, "{text}");
     assert!(!nested.exists());
     assert!(!outer.exists());
 }
@@ -265,7 +322,7 @@ fn single_key_confirmation_accepts_lower_and_upper_y() {
         let repo = Repo::new();
         let candidate = repo.primary.parent().unwrap().join("candidate");
         repo.worktree("feature/candidate", &candidate);
-        let mut session = repo.pty(&["prune"]);
+        let mut session = repo.pty(&["prune", "--all"]);
         session.expect("[y/N]").unwrap();
         session.send(key).unwrap();
         session.expect(Eof).unwrap();
@@ -279,7 +336,7 @@ fn enter_n_and_other_key_cancel() {
         let repo = Repo::new();
         let candidate = repo.primary.parent().unwrap().join("candidate");
         repo.worktree("feature/candidate", &candidate);
-        let mut session = repo.pty(&["prune"]);
+        let mut session = repo.pty(&["prune", "--all"]);
         session.expect("[y/N]").unwrap();
         session.send(key).unwrap();
         session.expect(Eof).unwrap();
@@ -296,7 +353,7 @@ fn tty_yes_and_no_candidate_do_not_prompt() {
 
     let candidate = repo.primary.parent().unwrap().join("candidate");
     repo.worktree("feature/candidate", &candidate);
-    let mut session = repo.pty(&["prune", "--yes"]);
+    let mut session = repo.pty(&["prune", "--all", "--yes"]);
     let result = session.expect(Eof).unwrap();
     assert!(!String::from_utf8_lossy(result.before()).contains("[y/N]"));
     assert!(!candidate.exists());
@@ -307,7 +364,7 @@ fn candidate_becoming_dirty_during_confirmation_is_preserved() {
     let repo = Repo::new();
     let candidate = repo.primary.parent().unwrap().join("candidate");
     repo.worktree("feature/candidate", &candidate);
-    let mut session = repo.pty(&["prune"]);
+    let mut session = repo.pty(&["prune", "--all"]);
     session.expect("[y/N]").unwrap();
     std::fs::write(candidate.join("new-file"), "keep\n").unwrap();
     session.send("y").unwrap();

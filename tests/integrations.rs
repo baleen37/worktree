@@ -314,7 +314,7 @@ fn gc_runs_after_git_create_remove_and_once_per_prune_batch() {
     );
     let output = tools
         .command(&repo.primary)
-        .args(["prune", "--yes"])
+        .args(["prune", "--all", "--yes"])
         .output()
         .unwrap();
     assert!(

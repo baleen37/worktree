@@ -123,6 +123,7 @@ fn picker_requires_tty_and_leaves_path_file_untouched() {
 #[test]
 fn picker_selects_linked_worktree_from_tty() {
     let repo = GitRepo::new();
+    std::fs::write(repo.linked.join("untracked"), "dirty\n").unwrap();
     let tools = TestWt::new();
     let path_file = repo.primary.parent().unwrap().join("result");
     let mut command = tools.process_command();
@@ -131,7 +132,9 @@ fn picker_selects_linked_worktree_from_tty() {
         .env("WT_SHELL_PATH_FILE", &path_file);
     let mut session = Session::spawn(command).unwrap();
     session.set_expect_timeout(Some(std::time::Duration::from_secs(5)));
+    session.expect("[current]").unwrap();
     session.expect("feature/list").unwrap();
+    session.expect("dirty").unwrap();
     session.send("feature/list").unwrap();
     session.send("\r").unwrap();
     session.expect(Eof).unwrap();
