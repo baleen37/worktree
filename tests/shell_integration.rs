@@ -3,6 +3,7 @@ mod git_repo;
 #[path = "support/wt_command.rs"]
 mod wt_command;
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -209,6 +210,60 @@ fn shell_wrappers_change_to_path_with_spaces() {
         assert_eq!(
             String::from_utf8(output.stdout).unwrap().trim(),
             format!("{}\n{}", repo.primary.display(), repo.linked.display()),
+            "{shell}"
+        );
+    }
+}
+
+#[test]
+fn shell_wrappers_apply_safe_path_after_failure_and_preserve_status() {
+    let repo = GitRepo::new();
+    let tools = TestWt::new();
+    let home = tempfile::tempdir().unwrap();
+    let bin = home.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let fake_wt = bin.join("wt");
+    std::fs::write(
+        &fake_wt,
+        "#!/bin/sh\nprintf '%s\\n' \"$WT_TEST_TARGET\" > \"$WT_SHELL_PATH_FILE\"\nexit 23\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_wt, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    for shell in ["zsh", "bash", "fish"] {
+        let binary = std::env::var(format!("WT_TEST_{}", shell.to_uppercase()))
+            .unwrap_or_else(|_| shell.into());
+        let init =
+            String::from_utf8(wt(&["config", "shell", "init", shell], home.path()).stdout).unwrap();
+        let command_status = if shell == "fish" {
+            "set command_status $status\nprintf 'status=%s\\n' $command_status"
+        } else {
+            "printf 'status=%s\\n' \"$?\""
+        };
+        let script = home.path().join(format!("failure.{shell}"));
+        std::fs::write(
+            &script,
+            format!(
+                "{init}\ncd \"{}\"\nwt remove\n{command_status}\npwd\n",
+                repo.linked.display()
+            ),
+        )
+        .unwrap();
+        let output = Command::new(&binary)
+            .arg(&script)
+            .env("PATH", tools.path_with(&bin))
+            .env("HOME", home.path())
+            .env("WT_TEST_TARGET", &repo.primary)
+            .output()
+            .unwrap_or_else(|err| panic!("{shell} unavailable at {binary}: {err}"));
+        assert!(
+            output.status.success(),
+            "{shell}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            format!("status=23\n{}", repo.primary.display()),
             "{shell}"
         );
     }

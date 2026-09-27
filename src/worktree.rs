@@ -369,15 +369,30 @@ pub fn prune(repo: &RepoContext, options: PruneOptions) -> Result<PruneOutcome> 
         println!();
     }
     // Re-evaluate the whole repository after confirmation and before every removal.
+    let caller_path = repo.current_root.clone();
+    let mut focus_herdr = None;
     for path in outcome.candidates.clone() {
         if !preview(repo, &options)?.candidates.contains(&path) {
             continue;
         }
+        let herdr = Herdr::active(&repo.primary_root)?;
         let target = path.to_str().context("worktree path is not UTF-8")?;
-        git_text(&repo.primary_root, &["worktree", "remove", "--", target])?;
+        if let Some(active_herdr) = herdr.as_ref() {
+            if let Some(workspace_id) = active_herdr.open_workspace_id(&path) {
+                active_herdr.remove(&repo.primary_root, workspace_id)?;
+            } else {
+                git_text(&repo.primary_root, &["worktree", "remove", "--", target])?;
+            }
+        } else {
+            git_text(&repo.primary_root, &["worktree", "remove", "--", target])?;
+        }
         outcome.removed.push(path);
+        focus_herdr = herdr;
     }
     if !outcome.removed.is_empty() {
+        if let Some(herdr) = focus_herdr.as_ref() {
+            herdr.open(&repo.primary_root, &caller_path)?;
+        }
         nix::start();
     }
     Ok(outcome)
@@ -430,15 +445,33 @@ pub fn remove(
         .find(|entry| entry.branch.as_deref() == Some(&repo.base_branch))
         .map(|entry| &entry.path)
         .context("base branch is not checked out in a worktree")?;
+    let caller_path = repo.current_root.clone();
+    let focus_path = if entry.is_current {
+        base_path.clone()
+    } else {
+        caller_path
+    };
+    let herdr = Herdr::active(&repo.primary_root)?;
     if entry.is_current {
         std::env::set_current_dir(base_path)
             .with_context(|| format!("could not change directory to {}", base_path.display()))?;
     }
     let target_path = entry.path.to_str().context("worktree path is not UTF-8")?;
-    git_text(
-        &repo.primary_root,
-        &["worktree", "remove", "--", target_path],
-    )?;
+    if let Some(herdr) = herdr.as_ref() {
+        if let Some(workspace_id) = herdr.open_workspace_id(&entry.path) {
+            herdr.remove(&repo.primary_root, workspace_id)?;
+        } else {
+            git_text(
+                &repo.primary_root,
+                &["worktree", "remove", "--", target_path],
+            )?;
+        }
+    } else {
+        git_text(
+            &repo.primary_root,
+            &["worktree", "remove", "--", target_path],
+        )?;
+    }
 
     if entry.is_current {
         write_path(shell_path_file, base_path)?;
@@ -456,6 +489,9 @@ pub fn remove(
             let _ = git_text(base_path, &["branch", "--unset-upstream", branch]);
             git_text(base_path, &["branch", "-d", branch])?;
         }
+    }
+    if let Some(herdr) = herdr.as_ref() {
+        herdr.open(&repo.primary_root, &focus_path)?;
     }
     nix::start();
     Ok(())
@@ -509,6 +545,7 @@ pub fn merge(
             bail!("worktree is dirty: {}", entry.path.display());
         }
     }
+    let herdr = Herdr::active(&repo.primary_root)?;
 
     let source_ref = format!("refs/heads/{source_branch}");
     let output = Command::new("git")
@@ -544,13 +581,27 @@ pub fn merge(
     let source_path = source.path.to_str().context("worktree path is not UTF-8")?;
     std::env::set_current_dir(&target_path)
         .with_context(|| format!("could not change directory to {}", target_path.display()))?;
-    git_text(
-        &repo.primary_root,
-        &["worktree", "remove", "--", source_path],
-    )?;
+    if let Some(herdr) = herdr.as_ref() {
+        if let Some(workspace_id) = herdr.open_workspace_id(&source.path) {
+            herdr.remove(&repo.primary_root, workspace_id)?;
+        } else {
+            git_text(
+                &repo.primary_root,
+                &["worktree", "remove", "--", source_path],
+            )?;
+        }
+    } else {
+        git_text(
+            &repo.primary_root,
+            &["worktree", "remove", "--", source_path],
+        )?;
+    }
     let _ = git_text(&target_path, &["branch", "--unset-upstream", source_branch]);
     git_text(&target_path, &["branch", "-d", "--", source_branch])?;
     write_path(shell_path_file, &target_path)?;
+    if let Some(herdr) = herdr.as_ref() {
+        herdr.open(&repo.primary_root, &target_path)?;
+    }
     nix::start();
     Ok(target_path)
 }
