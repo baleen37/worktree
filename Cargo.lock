@@ -673,6 +673,7 @@ dependencies = [
  "console",
  "dialoguer",
  "expectrl",
+ "libc",
  "predicates",
  "serde_json",
  "tempfile",

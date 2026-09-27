@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
 use crate::git::RepoContext;
+use crate::integrations::herdr::Herdr;
 use crate::picker;
 use crate::shell::{self, Shell};
 use crate::worktree::{
@@ -11,6 +12,8 @@ use crate::worktree::{
 #[derive(Debug, Parser)]
 #[command(name = "wt", version, about = "Git worktree manager written in Rust")]
 struct Cli {
+    #[arg(long, hide = true)]
+    internal_herdr_detached: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -69,6 +72,19 @@ enum ShellCommands {
 
 pub fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if matches!(
+        cli.command.as_ref(),
+        Some(Commands::Merge { .. } | Commands::Remove { .. })
+    ) && !cli.internal_herdr_detached
+        && Herdr::is_active_context()
+    {
+        let status = Herdr::run_lifecycle_in_detached_session()?;
+        anyhow::ensure!(
+            status.success(),
+            "detached wt lifecycle command exited with {status}"
+        );
+        return Ok(());
+    }
     match cli.command.unwrap_or(Commands::Switch {
         create: None,
         branch: None,
