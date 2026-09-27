@@ -101,7 +101,9 @@ if [ "$WT_NIX_FAIL" = 1 ]; then exit 42; fi
         while self
             .lines()
             .iter()
-            .filter(|line| *line == "nix <store> <gc>")
+            .filter(|line| {
+                *line == "nix <--extra-experimental-features> <nix-command> <store> <gc>"
+            })
             .count()
             < count
         {
@@ -144,7 +146,7 @@ fn active_herdr_resolves_linked_workspace_and_creates_with_exact_arguments() {
                 "herdr <worktree> <create> <--workspace> <source-id> <--branch> <feature/new> <--base> <main> <--path> <{}> <--focus>",
                 target.display()
             ),
-            "nix <store> <gc>",
+            "nix <--extra-experimental-features> <nix-command> <store> <gc>",
         ]
     );
 }
@@ -328,7 +330,9 @@ fn gc_runs_after_git_create_remove_and_once_per_prune_batch() {
         tools
             .lines()
             .iter()
-            .filter(|line| *line == "nix <store> <gc>")
+            .filter(|line| {
+                *line == "nix <--extra-experimental-features> <nix-command> <store> <gc>"
+            })
             .count(),
         3
     );
@@ -343,7 +347,9 @@ fn gc_runs_after_git_create_remove_and_once_per_prune_batch() {
         tools
             .lines()
             .iter()
-            .filter(|line| *line == "nix <store> <gc>")
+            .filter(|line| {
+                *line == "nix <--extra-experimental-features> <nix-command> <store> <gc>"
+            })
             .count(),
         3
     );
