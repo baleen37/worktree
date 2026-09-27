@@ -272,14 +272,17 @@ fn classify(
     options: &PruneOptions,
     now: SystemTime,
 ) -> Result<PruneClass> {
-    if entry.is_primary || entry.is_current || entry.branch.as_deref() == Some(&repo.base_branch) {
-        return Ok(PruneClass::Keep);
-    }
-    if entry.status() != "clean" {
+    if entry.is_primary || entry.is_current {
         return Ok(PruneClass::Keep);
     }
     if options.all {
         return Ok(PruneClass::All);
+    }
+    if entry.branch.as_deref() == Some(&repo.base_branch) {
+        return Ok(PruneClass::Keep);
+    }
+    if entry.status() != "clean" {
+        return Ok(PruneClass::Keep);
     }
     let Some(branch) = entry.branch.as_deref() else {
         return Ok(PruneClass::Keep);
@@ -370,27 +373,40 @@ pub fn prune(repo: &RepoContext, options: PruneOptions) -> Result<PruneOutcome> 
     }
     // Re-evaluate the whole repository after confirmation and before every removal.
     let caller_path = repo.current_root.clone();
-    let mut focus_herdr = None;
+    let mut herdr = None;
+    let mut herdr_loaded = false;
     for path in outcome.candidates.clone() {
         if !preview(repo, &options)?.candidates.contains(&path) {
             continue;
         }
-        let herdr = Herdr::active(&repo.primary_root)?;
+        if !herdr_loaded {
+            herdr = Herdr::active(&repo.primary_root)?;
+            herdr_loaded = true;
+        }
         let target = path.to_str().context("worktree path is not UTF-8")?;
         if let Some(active_herdr) = herdr.as_ref() {
             if let Some(workspace_id) = active_herdr.open_workspace_id(&path) {
-                active_herdr.remove(&repo.primary_root, workspace_id)?;
+                active_herdr.remove(&repo.primary_root, workspace_id, options.all)?;
             } else {
-                git_text(&repo.primary_root, &["worktree", "remove", "--", target])?;
+                let mut args = vec!["worktree", "remove"];
+                if options.all {
+                    args.push("--force");
+                }
+                args.extend(["--", target]);
+                git_text(&repo.primary_root, &args)?;
             }
         } else {
-            git_text(&repo.primary_root, &["worktree", "remove", "--", target])?;
+            let mut args = vec!["worktree", "remove"];
+            if options.all {
+                args.push("--force");
+            }
+            args.extend(["--", target]);
+            git_text(&repo.primary_root, &args)?;
         }
         outcome.removed.push(path);
-        focus_herdr = herdr;
     }
     if !outcome.removed.is_empty() {
-        if let Some(herdr) = focus_herdr.as_ref() {
+        if let Some(herdr) = herdr.as_ref() {
             herdr.open(&repo.primary_root, &caller_path)?;
         }
         nix::start();
@@ -459,7 +475,7 @@ pub fn remove(
     let target_path = entry.path.to_str().context("worktree path is not UTF-8")?;
     if let Some(herdr) = herdr.as_ref() {
         if let Some(workspace_id) = herdr.open_workspace_id(&entry.path) {
-            herdr.remove(&repo.primary_root, workspace_id)?;
+            herdr.remove(&repo.primary_root, workspace_id, false)?;
         } else {
             git_text(
                 &repo.primary_root,
@@ -583,7 +599,7 @@ pub fn merge(
         .with_context(|| format!("could not change directory to {}", target_path.display()))?;
     if let Some(herdr) = herdr.as_ref() {
         if let Some(workspace_id) = herdr.open_workspace_id(&source.path) {
-            herdr.remove(&repo.primary_root, workspace_id)?;
+            herdr.remove(&repo.primary_root, workspace_id, false)?;
         } else {
             git_text(
                 &repo.primary_root,

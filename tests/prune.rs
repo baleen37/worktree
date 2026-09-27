@@ -195,7 +195,8 @@ fn default_waits_three_days_for_merged_and_unmerged_worktrees() {
 }
 
 #[test]
-fn all_removes_clean_external_and_detached_worktrees_but_keeps_branches_and_protected_paths() {
+fn all_force_removes_external_detached_and_dirty_worktrees_but_keeps_branches_and_protected_paths()
+{
     let repo = Repo::new();
     let root = repo.primary.parent().unwrap();
     let merged = root.join("external-merged");
@@ -225,12 +226,12 @@ fn all_removes_clean_external_and_detached_worktrees_but_keeps_branches_and_prot
         String::from_utf8_lossy(&output.stderr)
     );
     let text = String::from_utf8(output.stdout).unwrap();
-    assert!(text.contains("all: 3"), "{text}");
-    assert!(text.contains("keep: 3"), "{text}");
-    for path in [&merged, &unmerged, &detached] {
+    assert!(text.contains("all: 4"), "{text}");
+    assert!(text.contains("keep: 2"), "{text}");
+    for path in [&merged, &unmerged, &dirty, &detached] {
         assert!(!path.exists(), "{}", path.display());
     }
-    for path in [&repo.primary, &repo.base, &dirty] {
+    for path in [&repo.primary, &repo.base] {
         assert!(path.exists(), "{}", path.display());
     }
     for branch in ["feature/merged", "feature/unmerged"] {
@@ -260,13 +261,14 @@ fn current_worktree_is_preserved_even_when_merged_and_clean() {
     assert!(
         String::from_utf8(output.stdout)
             .unwrap()
-            .contains("keep: 3")
+            .contains("keep: 2")
     );
     assert!(current.exists());
+    assert!(!repo.base.exists());
 }
 
 #[test]
-fn candidate_containing_preserved_worktree_is_kept() {
+fn candidate_containing_current_worktree_is_kept() {
     let repo = Repo::new();
     std::fs::write(repo.base.join(".gitignore"), "nested/\n").unwrap();
     git(&repo.base, &["add", ".gitignore"]);
@@ -275,17 +277,23 @@ fn candidate_containing_preserved_worktree_is_kept() {
     repo.worktree("feature/outer", &outer);
     let nested = outer.join("nested");
     repo.worktree("feature/nested", &nested);
-    std::fs::write(nested.join("nested-change"), "keep\n").unwrap();
-    let output = repo.run(&["prune", "--all", "--yes"]);
+    let output = repo
+        .wt
+        .command()
+        .current_dir(&nested)
+        .args(["prune", "--all", "--yes"])
+        .output()
+        .unwrap();
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
     let text = String::from_utf8(output.stdout).unwrap();
-    assert!(text.contains("all: 0"), "{text}");
-    assert!(text.contains("keep: 4"), "{text}");
+    assert!(text.contains("all: 1"), "{text}");
+    assert!(text.contains("keep: 3"), "{text}");
     assert!(outer.exists() && nested.exists());
+    assert!(!repo.base.exists());
 }
 
 #[test]
@@ -360,7 +368,7 @@ fn tty_yes_and_no_candidate_do_not_prompt() {
 }
 
 #[test]
-fn candidate_becoming_dirty_during_confirmation_is_preserved() {
+fn candidate_becoming_dirty_during_confirmation_is_force_removed() {
     let repo = Repo::new();
     let candidate = repo.primary.parent().unwrap().join("candidate");
     repo.worktree("feature/candidate", &candidate);
@@ -369,10 +377,7 @@ fn candidate_becoming_dirty_during_confirmation_is_preserved() {
     std::fs::write(candidate.join("new-file"), "keep\n").unwrap();
     session.send("y").unwrap();
     session.expect(Eof).unwrap();
-    assert_eq!(
-        std::fs::read_to_string(candidate.join("new-file")).unwrap(),
-        "keep\n"
-    );
+    assert!(!candidate.exists());
 }
 
 #[test]

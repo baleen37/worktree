@@ -65,6 +65,13 @@ if [ "$1 $2" = 'worktree list' ]; then
 fi
 if [ "$1 $2" = 'worktree remove' ]; then
   if [ -n "$WT_SESSION_LOG" ]; then printf '%s\n' "$PPID" >> "$WT_SESSION_LOG"; fi
+  force=0
+  for arg in "$@"; do
+    if [ "$arg" = "--force" ]; then force=1; fi
+  done
+  if [ "$force" = 1 ]; then
+    exec "$WT_REAL_GIT" -C "$WT_PRIMARY" worktree remove --force -- "$WT_HERDR_REMOVE_PATH"
+  fi
   exec "$WT_REAL_GIT" -C "$WT_PRIMARY" worktree remove -- "$WT_HERDR_REMOVE_PATH"
 fi
 if [ "$1 $2" = 'worktree create' ]; then
@@ -909,8 +916,9 @@ fn active_herdr_merge_rejects_foreign_repository_before_merging() {
 }
 
 #[test]
-fn active_herdr_prune_removes_open_child_preserves_branch_and_focus() {
+fn active_herdr_prune_force_removes_dirty_open_child_preserves_branch_and_focus() {
     let repo = GitRepo::with_origin();
+    fs::write(repo.linked.join("uncommitted.txt"), "discard this child\n").unwrap();
     let tools = FakeTools::new(true);
     let output = tools
         .command(&repo.primary)
@@ -932,11 +940,12 @@ fn active_herdr_prune_removes_open_child_preserves_branch_and_focus() {
     tools.await_nix(1);
     assert!(!repo.linked.exists());
     assert!(branch_exists(&repo.primary, "feature/list"));
+    assert!(!repo.linked.join("uncommitted.txt").exists());
     assert!(
         tools
             .lines()
             .iter()
-            .any(|line| line == "herdr <worktree> <remove> <--workspace> <child-id>")
+            .any(|line| line == "herdr <worktree> <remove> <--workspace> <child-id> <--force>")
     );
     assert!(tools.lines().iter().any(|line| line
         == &format!(
@@ -956,7 +965,7 @@ fn active_herdr_prune_removes_open_child_preserves_branch_and_focus() {
 }
 
 #[test]
-fn active_herdr_prune_never_removes_primary_base_current_or_dirty_workspace_ids() {
+fn active_herdr_prune_removes_base_and_dirty_but_keeps_primary_and_current() {
     let repo = GitRepo::new();
     git(&repo.primary, &["branch", "-m", "develop"]);
     let base = repo.primary.parent().unwrap().join("base workspace");
@@ -1010,9 +1019,9 @@ fn active_herdr_prune_never_removes_primary_base_current_or_dirty_workspace_ids(
                 &[
                     (&repo.primary, Some("primary-id")),
                     (&repo.linked, Some("current-id")),
-                    (&base, Some("base-id")),
+                    (&base, None),
                     (&candidate, Some("candidate-id")),
-                    (&dirty, Some("dirty-id")),
+                    (&dirty, None),
                 ],
             ),
         )
@@ -1028,8 +1037,8 @@ fn active_herdr_prune_never_removes_primary_base_current_or_dirty_workspace_ids(
     assert!(!candidate.exists());
     assert!(repo.primary.exists());
     assert!(repo.linked.exists());
-    assert!(base.exists());
-    assert!(dirty.exists());
+    assert!(!base.exists());
+    assert!(!dirty.exists());
     assert!(branch_exists(&repo.primary, "develop"));
     assert!(branch_exists(&repo.primary, "main"));
     assert!(branch_exists(&repo.primary, "feature/list"));
@@ -1042,7 +1051,7 @@ fn active_herdr_prune_never_removes_primary_base_current_or_dirty_workspace_ids(
         .collect();
     assert_eq!(
         removals,
-        ["herdr <worktree> <remove> <--workspace> <candidate-id>"]
+        ["herdr <worktree> <remove> <--workspace> <candidate-id> <--force>"]
     );
     assert!(tools.lines().iter().any(|line| line
         == &format!(
