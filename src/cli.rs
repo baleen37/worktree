@@ -37,7 +37,7 @@ enum Commands {
         /// Deprecated alias for the default three-day cleanup.
         #[arg(long)]
         stale: bool,
-        /// Remove all clean registered worktrees except the primary, base, and current worktrees.
+        /// Force-remove all registered worktrees except the primary and current worktrees.
         #[arg(long)]
         all: bool,
         /// Remove without confirmation.

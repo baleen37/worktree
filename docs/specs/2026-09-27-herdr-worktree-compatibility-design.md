@@ -34,9 +34,9 @@ Discovery: full
 | `wt switch -c <branch>` | `.worktrees` 경로를 넘겨 `herdr worktree create --focus` | fetch, base fast-forward, dirty base 거부, 브랜치 생성 규칙 |
 | `wt remove` | 대상에 열린 Herdr workspace ID가 있으면 `herdr worktree remove --workspace <id>` 사용 | dirty, primary, base worktree 보호 및 기존 merged branch 삭제 조건 |
 | `wt merge` | 기존 Git merge 성공 뒤 Herdr로 source checkout을 제거하고 target에 포커스 | source와 target의 working tree 변경 없음 확인, 일반 Git merge, merge 성공 뒤 source branch 삭제 |
-| `wt prune` | 확인 및 매 삭제 전 재평가 뒤 열린 Herdr child는 Herdr로 제거하고 나머지는 Git으로 제거; 완료 후 호출자의 경로에 포커스 | 기본 3일 기준, `--all`, dirty worktree 보호, branch 보존, 비대화형 미리보기 |
+| `wt prune` | 확인 및 매 삭제 전 재평가 뒤 열린 Herdr child는 Herdr로 제거하고 나머지는 Git으로 제거; 완료 후 호출자의 경로에 포커스 | 기본 3일 기준, `--all`, branch 보존, 비대화형 미리보기 |
 
-`herdr worktree remove`에는 `--force`를 전달하지 않는다. `wt`의 dirty 확인을 보존하고 Herdr도 삭제를 거부할 수 있게 한다. Herdr 삭제가 실패하면 Git 삭제로 재시도하지 않는다.
+일반 `wt remove`와 `wt merge`는 `herdr worktree remove`에 `--force`를 전달하지 않는다. `wt prune --all`만 dirty와 locked worktree를 포함하도록 Herdr와 Git 삭제에 `--force`를 전달한다. Herdr 삭제가 실패하면 Git 삭제로 재시도하지 않는다.
 
 Herdr 삭제가 성공한 뒤 기존 `wt` 브랜치 정책을 실행한다. 따라서 Herdr의 `worktree remove` 자체는 브랜치를 지우지 않는다. `wt merge`의 Git merge가 성공했으나 Herdr 삭제가 실패하면 명령은 실패를 반환하고, branch cleanup을 진행하지 않는다.
 

@@ -98,7 +98,7 @@ Run `wt merge` from a feature worktree to merge it into the local `main` or `mas
 
 `wt prune` previews clean, branch-attached worktrees where the later of the directory creation time and checked-out commit time is at least three days old. If the filesystem does not provide a creation time, `wt` uses the directory modification time. This applies to merged and unmerged branches. The primary, base, and current worktrees are kept. A terminal run asks before removal; a non-interactive run previews only. Pass `--yes` to remove without prompting.
 
-`wt prune --all` ignores age and merge status. It includes detached worktrees and registered paths outside the repository, removes nested worktrees from child to parent, and keeps branch references. It still keeps dirty worktrees and the primary, base, and current worktrees. Worktrees whose Git status cannot be read are kept. When run from an active Herdr workspace, `wt prune` removes open child workspaces through Herdr and keeps Herdr state synchronized with Git. Outside Herdr, it uses Git directly.
+`wt prune --all` force-removes every registered worktree except the primary and current worktrees, including the base worktree when it is not current, dirty worktrees, locked worktrees, detached worktrees, and paths outside the repository. Uncommitted files in removed worktrees are lost; branch references are kept. Nested worktrees are removed from child to parent, while a parent containing a kept primary or current worktree is kept. When run from an active Herdr workspace, `wt prune` removes open child workspaces through Herdr and keeps Herdr state synchronized with Git. Outside Herdr, it uses Git directly.
 
 `--stale` remains as a deprecated alias for the default three-day cleanup.
 
