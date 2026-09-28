@@ -1,7 +1,8 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use console::{Style, measure_text_width, truncate_str};
@@ -194,163 +195,335 @@ impl WorktreeInfo {
 }
 
 pub struct PruneOptions {
-    pub all: bool,
+    pub force: u8,
     pub yes: bool,
 }
 
 pub struct PruneOutcome {
-    pub safe: usize,
-    pub stale: usize,
-    pub all: usize,
     pub keep: usize,
     pub candidates: Vec<PathBuf>,
     pub removed: Vec<PathBuf>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PruneClass {
-    Safe,
-    Stale,
-    All,
-    Keep,
+struct RegisteredWorktree {
+    path: PathBuf,
+    is_primary: bool,
+    is_locked: bool,
 }
 
-const PRUNE_AGE: Duration = Duration::from_secs(3 * 24 * 60 * 60);
-
-fn effective_creation_time(
-    created_at: Option<SystemTime>,
-    modified_at: impl FnOnce() -> Result<SystemTime>,
-) -> Result<SystemTime> {
-    match created_at {
-        Some(created_at) => Ok(created_at),
-        None => modified_at(),
-    }
+struct PruneRepository {
+    common_dir: PathBuf,
+    primary_root: PathBuf,
+    worktrees: Vec<RegisteredWorktree>,
 }
 
-fn old_enough(now: SystemTime, created_at: SystemTime, checkout_time: SystemTime) -> bool {
-    now.duration_since(created_at.max(checkout_time))
-        .is_ok_and(|age| age >= PRUNE_AGE)
+struct PruneCandidate {
+    path: PathBuf,
+    common_dir: PathBuf,
+    primary_root: PathBuf,
 }
 
-fn checkout_time(path: &Path) -> Result<SystemTime> {
-    let timestamp: i64 = git_text(path, &["log", "-1", "--format=%ct", "HEAD"])?
-        .parse()
-        .context("Git returned an invalid checkout commit timestamp")?;
-    let duration = Duration::from_secs(timestamp.unsigned_abs());
-    if timestamp >= 0 {
-        SystemTime::UNIX_EPOCH
-            .checked_add(duration)
-            .context("checkout commit timestamp is out of range")
-    } else {
-        SystemTime::UNIX_EPOCH
-            .checked_sub(duration)
-            .context("checkout commit timestamp is out of range")
-    }
+struct PrunePlan {
+    keep: usize,
+    candidates: Vec<PruneCandidate>,
+    repositories: Vec<PruneRepository>,
+    current_repository: Option<(PathBuf, PathBuf)>,
 }
 
-fn merged_into_base(repo: &RepoContext, branch: &str) -> Result<bool> {
-    let branch_ref = format!("refs/heads/{branch}");
-    let base_ref = format!("refs/heads/{}", repo.base_branch);
-    let output = std::process::Command::new("git")
-        .current_dir(&repo.primary_root)
-        .args(["merge-base", "--is-ancestor", &branch_ref, &base_ref])
-        .output()
-        .with_context(|| format!("could not check whether {branch} is merged"))?;
-    match output.status.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        _ => bail!(
-            "git merge-base --is-ancestor failed for {branch}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ),
-    }
-}
-
-fn classify(
-    repo: &RepoContext,
-    entry: &WorktreeInfo,
-    options: &PruneOptions,
-    now: SystemTime,
-) -> Result<PruneClass> {
-    if entry.is_primary || entry.is_current {
-        return Ok(PruneClass::Keep);
-    }
-    if options.all {
-        return Ok(PruneClass::All);
-    }
-    if entry.branch.as_deref() == Some(&repo.base_branch) {
-        return Ok(PruneClass::Keep);
-    }
-    if entry.status() != "clean" {
-        return Ok(PruneClass::Keep);
-    }
-    let Some(branch) = entry.branch.as_deref() else {
-        return Ok(PruneClass::Keep);
-    };
-    let merged = merged_into_base(repo, branch)?;
-    let metadata = std::fs::metadata(&entry.path)?;
-    let created_at = effective_creation_time(metadata.created().ok(), || Ok(metadata.modified()?))?;
-    if !old_enough(now, created_at, checkout_time(&entry.path)?) {
-        return Ok(PruneClass::Keep);
-    }
-    Ok(if merged {
-        PruneClass::Safe
-    } else {
-        PruneClass::Stale
-    })
-}
-
-fn preview_at(repo: &RepoContext, options: &PruneOptions, now: SystemTime) -> Result<PruneOutcome> {
-    let entries = WorktreeInfo::list(repo)?;
-    let classes = entries
-        .iter()
-        .map(|entry| classify(repo, entry, options, now))
-        .collect::<Result<Vec<_>>>()?;
-    let mut candidates = Vec::new();
-    let mut safe = 0;
-    let mut stale = 0;
-    let mut all = 0;
-    let mut keep = 0;
-    for (entry, class) in entries.iter().zip(&classes) {
-        let contains_preserved = entries.iter().zip(&classes).any(|(other, other_class)| {
-            other.path != entry.path
-                && other.path.starts_with(&entry.path)
-                && *other_class == PruneClass::Keep
-        });
-        if *class == PruneClass::Keep || contains_preserved {
-            keep += 1;
-        } else {
-            match class {
-                PruneClass::Safe => safe += 1,
-                PruneClass::Stale => stale += 1,
-                PruneClass::All => all += 1,
-                PruneClass::Keep => unreachable!(),
-            }
-            candidates.push(entry.path.clone());
+fn collect_git_roots(directory: &Path, roots: &mut Vec<PathBuf>) -> Result<()> {
+    let marker = directory.join(".git");
+    match std::fs::symlink_metadata(&marker) {
+        Ok(metadata) if !metadata.file_type().is_symlink() => roots.push(directory.to_owned()),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("could not inspect {}", marker.display()));
         }
     }
-    candidates.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
-    Ok(PruneOutcome {
-        safe,
-        stale,
-        all,
-        keep,
-        candidates,
-        removed: Vec::new(),
+
+    let mut children = std::fs::read_dir(directory)
+        .with_context(|| format!("could not scan {}", directory.display()))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("could not scan {}", directory.display()))?;
+    children.sort_by_key(std::fs::DirEntry::path);
+    for child in children {
+        let path = child.path();
+        let file_type = child
+            .file_type()
+            .with_context(|| format!("could not inspect {}", path.display()))?;
+        if !file_type.is_dir() || file_type.is_symlink() || child.file_name() == ".git" {
+            continue;
+        }
+        collect_git_roots(&path, roots)?;
+    }
+    Ok(())
+}
+
+fn parse_worktree_list(text: &str, command_root: &Path) -> Result<Vec<RegisteredWorktree>> {
+    let mut worktrees = Vec::new();
+    let mut fields = Vec::new();
+    for field in text.split('\0') {
+        if field.is_empty() {
+            if !fields.is_empty() {
+                worktrees.push(parse_worktree_fields(
+                    &fields,
+                    command_root,
+                    worktrees.is_empty(),
+                )?);
+                fields.clear();
+            }
+        } else {
+            fields.push(field);
+        }
+    }
+    if !fields.is_empty() {
+        worktrees.push(parse_worktree_fields(
+            &fields,
+            command_root,
+            worktrees.is_empty(),
+        )?);
+    }
+    if worktrees.is_empty() {
+        bail!("Git reported no worktrees");
+    }
+    Ok(worktrees)
+}
+
+fn parse_worktree_fields(
+    fields: &[&str],
+    command_root: &Path,
+    is_primary: bool,
+) -> Result<RegisteredWorktree> {
+    let path = fields
+        .iter()
+        .find_map(|field| field.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .context("Git worktree entry has no path")?;
+    let path = if path.is_absolute() {
+        path
+    } else {
+        command_root.join(path)
+    };
+    Ok(RegisteredWorktree {
+        path,
+        is_primary,
+        is_locked: fields
+            .iter()
+            .any(|field| *field == "locked" || field.starts_with("locked ")),
     })
 }
 
-fn preview(repo: &RepoContext, options: &PruneOptions) -> Result<PruneOutcome> {
-    preview_at(repo, options, SystemTime::now())
+fn current_repository(directory: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
+    for ancestor in directory.ancestors() {
+        let marker = ancestor.join(".git");
+        match std::fs::symlink_metadata(&marker) {
+            Ok(metadata) if metadata.file_type().is_symlink() => continue,
+            Ok(_) => {
+                let root = PathBuf::from(git_text(ancestor, &["rev-parse", "--show-toplevel"])?);
+                let common_dir = PathBuf::from(git_text(
+                    ancestor,
+                    &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                )?)
+                .canonicalize()
+                .with_context(|| {
+                    format!("could not resolve Git metadata for {}", ancestor.display())
+                })?;
+                return Ok(Some((common_dir, root)));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("could not inspect {}", marker.display()));
+            }
+        }
+    }
+    Ok(None)
 }
 
-pub fn prune(repo: &RepoContext, options: PruneOptions) -> Result<PruneOutcome> {
-    let mut outcome = preview(repo, &options)?;
-    println!("safe: {}", outcome.safe);
-    println!("stale: {}", outcome.stale);
-    if options.all {
-        println!("all: {}", outcome.all);
+fn scan_repositories(root: &Path) -> Result<Vec<PruneRepository>> {
+    let mut roots = Vec::new();
+    collect_git_roots(root, &mut roots)?;
+    roots.sort();
+
+    let mut seen = BTreeSet::new();
+    let mut repositories = Vec::new();
+    for command_root in roots {
+        let common_dir = PathBuf::from(git_text(
+            &command_root,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?)
+        .canonicalize()
+        .with_context(|| {
+            format!(
+                "could not resolve Git metadata for {}",
+                command_root.display()
+            )
+        })?;
+        if !seen.insert(common_dir.clone()) {
+            continue;
+        }
+        let listing = git_text(&command_root, &["worktree", "list", "--porcelain", "-z"])
+            .with_context(|| format!("could not list worktrees for {}", command_root.display()))?;
+        let worktrees = parse_worktree_list(&listing, &command_root).with_context(|| {
+            format!(
+                "could not read worktree registrations for {}",
+                command_root.display()
+            )
+        })?;
+        let primary_root = worktrees
+            .first()
+            .context("Git reported no worktrees")?
+            .path
+            .clone();
+        repositories.push(PruneRepository {
+            common_dir,
+            primary_root,
+            worktrees,
+        });
     }
+    Ok(repositories)
+}
+
+fn worktree_in_scope(path: &Path, root: &Path) -> Result<Option<PathBuf>> {
+    let path = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        root.join(path)
+    };
+    if !path.starts_with(root) {
+        return Ok(None);
+    }
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("could not inspect {}", path.display()));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(None);
+    }
+    let resolved = match path.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("could not resolve {}", path.display()));
+        }
+    };
+    Ok(resolved.starts_with(root).then_some(resolved))
+}
+
+fn worktree_is_clean(path: &Path) -> Option<bool> {
+    let output = Command::new("git")
+        .current_dir(path)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()
+        .ok()?;
+    output.status.success().then_some(output.stdout.is_empty())
+}
+
+fn plan_prune(root: &Path, options: &PruneOptions) -> Result<PrunePlan> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("could not resolve scan directory {}", root.display()))?;
+    let repositories = scan_repositories(&root)?;
+    let current_repository = current_repository(&root)?;
+    let mut entries = Vec::new();
+    for repository in &repositories {
+        for worktree in &repository.worktrees {
+            let Some(path) = worktree_in_scope(&worktree.path, &root)? else {
+                continue;
+            };
+            let is_scope_root = path == root;
+            let can_remove = !worktree.is_primary
+                && !is_scope_root
+                && (!worktree.is_locked || options.force >= 2)
+                && (options.force > 0 || worktree_is_clean(&path) == Some(true));
+            entries.push((
+                PruneCandidate {
+                    path,
+                    common_dir: repository.common_dir.clone(),
+                    primary_root: repository.primary_root.clone(),
+                },
+                can_remove,
+            ));
+        }
+    }
+
+    for index in 0..entries.len() {
+        if !entries[index].1 {
+            continue;
+        }
+        let parent = &entries[index].0.path;
+        if entries.iter().any(|(child, can_remove)| {
+            child.path != *parent && child.path.starts_with(parent) && !can_remove
+        }) {
+            entries[index].1 = false;
+        }
+    }
+
+    let mut candidates = Vec::new();
+    let mut keep = 0;
+    for (candidate, can_remove) in entries {
+        if can_remove {
+            candidates.push(candidate);
+        } else {
+            keep += 1;
+        }
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .path
+            .components()
+            .count()
+            .cmp(&left.path.components().count())
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok(PrunePlan {
+        keep,
+        candidates,
+        repositories,
+        current_repository,
+    })
+}
+
+fn remove_worktree(candidate: &PruneCandidate, force: u8) -> Result<()> {
+    let mut command = Command::new("git");
+    command
+        .arg("--git-dir")
+        .arg(&candidate.common_dir)
+        .args(["worktree", "remove"]);
+    command.args(std::iter::repeat_n("--force", force.min(2) as usize));
+    let output = command
+        .arg("--")
+        .arg(&candidate.path)
+        .output()
+        .with_context(|| format!("could not remove worktree {}", candidate.path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "could not remove worktree {}: {}",
+            candidate.path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn prune_plan_outcome(plan: &PrunePlan) -> PruneOutcome {
+    PruneOutcome {
+        keep: plan.keep,
+        candidates: plan
+            .candidates
+            .iter()
+            .map(|candidate| candidate.path.clone())
+            .collect(),
+        removed: Vec::new(),
+    }
+}
+
+pub fn prune(folder: &Path, options: PruneOptions) -> Result<PruneOutcome> {
+    let mut plan = plan_prune(folder, &options)?;
+    let mut outcome = prune_plan_outcome(&plan);
     println!("keep: {}", outcome.keep);
     for path in &outcome.candidates {
         println!("remove: {}", path.display());
@@ -371,44 +544,80 @@ pub fn prune(repo: &RepoContext, options: PruneOptions) -> Result<PruneOutcome> 
         }
         println!();
     }
-    // Re-evaluate the whole repository after confirmation and before every removal.
-    let caller_path = repo.current_root.clone();
-    let mut herdr = None;
-    let mut herdr_loaded = false;
-    for path in outcome.candidates.clone() {
-        if !preview(repo, &options)?.candidates.contains(&path) {
-            continue;
+
+    // Re-scan after confirmation so failed discovery still happens before the first removal.
+    let planned_paths = outcome.candidates.iter().cloned().collect::<BTreeSet<_>>();
+    plan = plan_prune(folder, &options)?;
+    let new_paths = plan
+        .candidates
+        .iter()
+        .filter(|candidate| !planned_paths.contains(&candidate.path))
+        .map(|candidate| candidate.path.clone())
+        .collect::<Vec<_>>();
+    let mut newly_kept = new_paths.len();
+    plan.candidates.retain(|candidate| {
+        let was_planned = planned_paths.contains(&candidate.path);
+        let contains_new_worktree = new_paths
+            .iter()
+            .any(|path| path != &candidate.path && path.starts_with(&candidate.path));
+        if was_planned && contains_new_worktree {
+            newly_kept += 1;
         }
-        if !herdr_loaded {
-            herdr = Herdr::active(&repo.primary_root)?;
-            herdr_loaded = true;
+        was_planned && !contains_new_worktree
+    });
+    plan.keep += newly_kept;
+    outcome.keep = plan.keep;
+    let caller_path = plan
+        .current_repository
+        .as_ref()
+        .map(|(_, path)| path.clone());
+    let herdr_repo = plan
+        .current_repository
+        .as_ref()
+        .and_then(|(common_dir, _)| {
+            plan.repositories
+                .iter()
+                .find(|repository| repository.common_dir == *common_dir)
+        });
+    let herdr = match herdr_repo {
+        Some(repository)
+            if plan
+                .candidates
+                .iter()
+                .any(|candidate| candidate.common_dir == repository.common_dir) =>
+        {
+            Herdr::active(&repository.primary_root)?
         }
-        let target = path.to_str().context("worktree path is not UTF-8")?;
-        if let Some(active_herdr) = herdr.as_ref() {
-            if let Some(workspace_id) = active_herdr.open_workspace_id(&path) {
-                active_herdr.remove(&repo.primary_root, workspace_id, options.all)?;
-            } else {
-                let mut args = vec!["worktree", "remove"];
-                if options.all {
-                    args.push("--force");
-                }
-                args.extend(["--", target]);
-                git_text(&repo.primary_root, &args)?;
-            }
+        _ => None,
+    };
+    let caller_common_dir = plan
+        .current_repository
+        .as_ref()
+        .map(|(common_dir, _)| common_dir);
+    let mut herdr_repo_removed = false;
+    for candidate in &plan.candidates {
+        let belongs_to_caller = caller_common_dir == Some(&candidate.common_dir);
+        let workspace_id = if belongs_to_caller {
+            herdr
+                .as_ref()
+                .and_then(|active_herdr| active_herdr.open_workspace_id(&candidate.path))
         } else {
-            let mut args = vec!["worktree", "remove"];
-            if options.all {
-                args.push("--force");
-            }
-            args.extend(["--", target]);
-            git_text(&repo.primary_root, &args)?;
+            None
+        };
+        if let (Some(active_herdr), Some(workspace_id)) = (herdr.as_ref(), workspace_id) {
+            active_herdr.remove(&candidate.primary_root, workspace_id, options.force)?;
+        } else {
+            remove_worktree(candidate, options.force)?;
         }
-        outcome.removed.push(path);
+        herdr_repo_removed |= belongs_to_caller;
+        outcome.removed.push(candidate.path.clone());
+    }
+    if herdr_repo_removed && let Some(active_herdr) = herdr.as_ref() {
+        let repository = herdr_repo.context("Herdr repository disappeared during prune")?;
+        let caller_path = caller_path.context("Herdr caller worktree is unavailable")?;
+        active_herdr.open(&repository.primary_root, &caller_path)?;
     }
     if !outcome.removed.is_empty() {
-        if let Some(herdr) = herdr.as_ref() {
-            herdr.open(&repo.primary_root, &caller_path)?;
-        }
         nix::start();
     }
     Ok(outcome)
@@ -475,7 +684,7 @@ pub fn remove(
     let target_path = entry.path.to_str().context("worktree path is not UTF-8")?;
     if let Some(herdr) = herdr.as_ref() {
         if let Some(workspace_id) = herdr.open_workspace_id(&entry.path) {
-            herdr.remove(&repo.primary_root, workspace_id, false)?;
+            herdr.remove(&repo.primary_root, workspace_id, 0)?;
         } else {
             git_text(
                 &repo.primary_root,
@@ -599,7 +808,7 @@ pub fn merge(
         .with_context(|| format!("could not change directory to {}", target_path.display()))?;
     if let Some(herdr) = herdr.as_ref() {
         if let Some(workspace_id) = herdr.open_workspace_id(&source.path) {
-            herdr.remove(&repo.primary_root, workspace_id, false)?;
+            herdr.remove(&repo.primary_root, workspace_id, 0)?;
         } else {
             git_text(
                 &repo.primary_root,
@@ -967,133 +1176,20 @@ mod tests {
     }
 
     #[test]
-    fn prune_age_uses_the_newer_timestamp_and_includes_the_72_hour_boundary() {
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10 * PRUNE_AGE.as_secs());
-        let boundary = now - PRUNE_AGE;
-
-        assert!(old_enough(now, boundary, boundary));
-        assert!(!old_enough(
-            now,
-            boundary + Duration::from_secs(1),
-            SystemTime::UNIX_EPOCH
-        ));
-        assert!(!old_enough(
-            now,
-            SystemTime::UNIX_EPOCH,
-            boundary + Duration::from_secs(1)
-        ));
-    }
-
-    #[test]
-    fn missing_creation_timestamp_falls_back_to_directory_modification_time() {
-        let modified_at = SystemTime::UNIX_EPOCH + Duration::from_secs(123);
-        let created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(456);
-
-        let mut read_modification_time = false;
-        assert_eq!(
-            effective_creation_time(Some(created_at), || {
-                read_modification_time = true;
-                Ok(modified_at)
-            })
-            .unwrap(),
-            created_at
-        );
-        assert!(!read_modification_time);
-        assert_eq!(
-            effective_creation_time(None, || {
-                read_modification_time = true;
-                Ok(modified_at)
-            })
-            .unwrap(),
-            modified_at
-        );
-        assert!(read_modification_time);
-    }
-
-    #[test]
-    fn default_prune_selects_matured_merged_and_unmerged_worktrees() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        let primary = root.join("primary");
-        let base = root.join("base");
-        let merged = root.join("merged");
-        let unmerged = root.join("unmerged");
-        git_text(&root, &["init", "-b", "parking", primary.to_str().unwrap()]).unwrap();
-        git_text(
-            &primary,
-            &[
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "commit",
-                "--allow-empty",
-                "-m",
-                "initial",
-            ],
-        )
-        .unwrap();
-        git_text(&primary, &["branch", "main"]).unwrap();
-        git_text(
-            &primary,
-            &["worktree", "add", base.to_str().unwrap(), "main"],
-        )
-        .unwrap();
-        git_text(
-            &primary,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                "feature/merged",
-                merged.to_str().unwrap(),
-                "main",
-            ],
-        )
-        .unwrap();
-        git_text(
-            &primary,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                "feature/unmerged",
-                unmerged.to_str().unwrap(),
-                "main",
-            ],
-        )
-        .unwrap();
-        git_text(
-            &unmerged,
-            &[
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "commit",
-                "--allow-empty",
-                "-m",
-                "unmerged",
-            ],
+    fn worktree_list_parser_handles_spaces_and_locked_metadata() {
+        let root = PathBuf::from("/tmp/repo with spaces");
+        let entries = parse_worktree_list(
+            "worktree /tmp/repo with spaces\0HEAD abc\0branch refs/heads/main\0\0worktree /tmp/locked worktree\0HEAD def\0detached\0locked backup drive\0\0",
+            &root,
         )
         .unwrap();
 
-        let repo = RepoContext::discover(&base).unwrap();
-        let outcome = preview_at(
-            &repo,
-            &PruneOptions {
-                all: false,
-                yes: true,
-            },
-            SystemTime::now() + PRUNE_AGE + Duration::from_secs(1),
-        )
-        .unwrap();
-
-        assert_eq!(outcome.safe, 1);
-        assert_eq!(outcome.stale, 1);
-        assert_eq!(outcome.keep, 2);
-        assert!(outcome.candidates.contains(&merged));
-        assert!(outcome.candidates.contains(&unmerged));
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].is_primary);
+        assert!(!entries[0].is_locked);
+        assert_eq!(entries[1].path, PathBuf::from("/tmp/locked worktree"));
+        assert!(!entries[1].is_primary);
+        assert!(entries[1].is_locked);
     }
 
     #[test]

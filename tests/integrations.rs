@@ -918,18 +918,31 @@ fn active_herdr_merge_rejects_foreign_repository_before_merging() {
 #[test]
 fn active_herdr_prune_force_removes_dirty_open_child_preserves_branch_and_focus() {
     let repo = GitRepo::with_origin();
-    fs::write(repo.linked.join("uncommitted.txt"), "discard this child\n").unwrap();
+    let child = repo.primary.join(".worktrees/herdr-child");
+    fs::create_dir_all(child.parent().unwrap()).unwrap();
+    git(
+        &repo.primary,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature/herdr-child",
+            child.to_str().unwrap(),
+            "main",
+        ],
+    );
+    fs::write(child.join("uncommitted.txt"), "discard this child\n").unwrap();
     let tools = FakeTools::new(true);
     let output = tools
         .command(&repo.primary)
-        .args(["prune", "--all", "--yes"])
+        .args(["prune", "--force", "--yes"])
         .env("HERDR_ENV", "1")
         .env("HERDR_WORKSPACE_ID", "source-id")
         .env(
             "WT_HERDR_LIST",
-            herdr_list(&repo.primary, &[(&repo.linked, Some("child-id"))]),
+            herdr_list(&repo.primary, &[(&child, Some("child-id"))]),
         )
-        .env("WT_HERDR_REMOVE_PATH", &repo.linked)
+        .env("WT_HERDR_REMOVE_PATH", &child)
         .output()
         .unwrap();
     assert!(
@@ -938,9 +951,9 @@ fn active_herdr_prune_force_removes_dirty_open_child_preserves_branch_and_focus(
         String::from_utf8_lossy(&output.stderr)
     );
     tools.await_nix(1);
-    assert!(!repo.linked.exists());
-    assert!(branch_exists(&repo.primary, "feature/list"));
-    assert!(!repo.linked.join("uncommitted.txt").exists());
+    assert!(!child.exists());
+    assert!(branch_exists(&repo.primary, "feature/herdr-child"));
+    assert!(!child.join("uncommitted.txt").exists());
     assert!(
         tools
             .lines()
@@ -965,67 +978,67 @@ fn active_herdr_prune_force_removes_dirty_open_child_preserves_branch_and_focus(
 }
 
 #[test]
-fn active_herdr_prune_removes_base_and_dirty_but_keeps_primary_and_current() {
-    let repo = GitRepo::new();
-    git(&repo.primary, &["branch", "-m", "develop"]);
-    let base = repo.primary.parent().unwrap().join("base workspace");
+fn active_herdr_prune_uses_herdr_only_for_the_callers_repository() {
+    let repo = GitRepo::with_origin();
+    let herdr_candidate = repo.primary.join(".worktrees/herdr-candidate");
+    fs::create_dir_all(herdr_candidate.parent().unwrap()).unwrap();
     git(
         &repo.primary,
         &[
             "worktree",
             "add",
             "-b",
-            "main",
-            base.to_str().unwrap(),
-            "develop",
-        ],
-    );
-    let candidate = repo.primary.parent().unwrap().join("clean candidate");
-    git(
-        &repo.primary,
-        &[
-            "worktree",
-            "add",
-            "-b",
-            "feature/candidate",
-            candidate.to_str().unwrap(),
+            "feature/herdr-candidate",
+            herdr_candidate.to_str().unwrap(),
             "main",
         ],
     );
-    let dirty = repo.primary.parent().unwrap().join("dirty sibling");
+
+    let other_root = repo.primary.join(".worktrees/other-repository");
+    fs::create_dir_all(&other_root).unwrap();
+    let other_primary = other_root.join("main checkout");
     git(
-        &repo.primary,
+        &other_root,
+        &["init", "-b", "main", other_primary.to_str().unwrap()],
+    );
+    fs::write(other_primary.join("README.md"), "other repository\n").unwrap();
+    git(&other_primary, &["add", "."]);
+    git(
+        &other_primary,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "initial",
+        ],
+    );
+    let git_candidate = other_root.join(".worktrees/git-candidate");
+    git(
+        &other_primary,
         &[
             "worktree",
             "add",
             "-b",
-            "feature/dirty",
-            dirty.to_str().unwrap(),
-            "develop",
+            "feature/git-candidate",
+            git_candidate.to_str().unwrap(),
+            "main",
         ],
     );
-    fs::write(dirty.join("uncommitted.txt"), "keep this workspace\n").unwrap();
+
     let tools = FakeTools::new(false);
     let output = tools
-        .command(&repo.linked)
-        .args(["prune", "--all", "--yes"])
-        .env("WT_PRIMARY", &repo.primary)
+        .command(&repo.primary)
+        .args(["prune", "--yes"])
         .env("HERDR_ENV", "1")
-        .env("HERDR_WORKSPACE_ID", "current-id")
+        .env("HERDR_WORKSPACE_ID", "source-id")
         .env(
             "WT_HERDR_LIST",
-            herdr_list(
-                &repo.primary,
-                &[
-                    (&repo.primary, Some("primary-id")),
-                    (&repo.linked, Some("current-id")),
-                    (&base, None),
-                    (&candidate, Some("candidate-id")),
-                    (&dirty, None),
-                ],
-            ),
+            herdr_list(&repo.primary, &[(&herdr_candidate, Some("child-id"))]),
         )
-        .env("WT_HERDR_REMOVE_PATH", &candidate)
+        .env("WT_HERDR_REMOVE_PATH", &herdr_candidate)
         .output()
         .unwrap();
 
@@ -1034,52 +1047,60 @@ fn active_herdr_prune_removes_base_and_dirty_but_keeps_primary_and_current() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!candidate.exists());
+    assert!(!herdr_candidate.exists());
+    assert!(!git_candidate.exists());
     assert!(repo.primary.exists());
-    assert!(repo.linked.exists());
-    assert!(!base.exists());
-    assert!(!dirty.exists());
-    assert!(branch_exists(&repo.primary, "develop"));
-    assert!(branch_exists(&repo.primary, "main"));
-    assert!(branch_exists(&repo.primary, "feature/list"));
-    assert!(branch_exists(&repo.primary, "feature/dirty"));
-    assert!(branch_exists(&repo.primary, "feature/candidate"));
-    let removals: Vec<_> = tools
+    assert!(branch_exists(&repo.primary, "feature/herdr-candidate"));
+    assert!(branch_exists(&other_primary, "feature/git-candidate"));
+    let herdr_removals: Vec<_> = tools
         .lines()
         .into_iter()
         .filter(|line| line.contains("<remove>"))
         .collect();
     assert_eq!(
-        removals,
-        ["herdr <worktree> <remove> <--workspace> <candidate-id> <--force>"]
+        herdr_removals,
+        ["herdr <worktree> <remove> <--workspace> <child-id>"]
     );
     assert!(tools.lines().iter().any(|line| line
         == &format!(
             "herdr <worktree> <open> <--workspace> <source-id> <--path> <{}> <--focus>",
-            repo.linked.display()
+            repo.primary.display()
         )));
 }
 
 #[test]
 fn active_herdr_prune_failure_does_not_git_remove_same_candidate() {
     let repo = GitRepo::with_origin();
+    let child = repo.primary.join(".worktrees/herdr-child");
+    fs::create_dir_all(child.parent().unwrap()).unwrap();
+    git(
+        &repo.primary,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature/herdr-child",
+            child.to_str().unwrap(),
+            "main",
+        ],
+    );
     let tools = FakeTools::new(false);
     let output = tools
         .command(&repo.primary)
-        .args(["prune", "--all", "--yes"])
+        .args(["prune", "--yes"])
         .env("HERDR_ENV", "1")
         .env("HERDR_WORKSPACE_ID", "source-id")
         .env(
             "WT_HERDR_LIST",
-            herdr_list(&repo.primary, &[(&repo.linked, Some("child-id"))]),
+            herdr_list(&repo.primary, &[(&child, Some("child-id"))]),
         )
-        .env("WT_HERDR_REMOVE_PATH", &repo.linked)
+        .env("WT_HERDR_REMOVE_PATH", &child)
         .env("WT_HERDR_FAIL", "remove")
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(repo.linked.exists());
-    assert!(branch_exists(&repo.primary, "feature/list"));
+    assert!(child.exists());
+    assert!(branch_exists(&repo.primary, "feature/herdr-child"));
     assert_eq!(
         tools
             .lines()
@@ -1093,15 +1114,28 @@ fn active_herdr_prune_failure_does_not_git_remove_same_candidate() {
 #[test]
 fn active_herdr_prune_without_child_id_uses_git_and_keeps_branch() {
     let repo = GitRepo::with_origin();
+    let child = repo.primary.join(".worktrees/herdr-child");
+    fs::create_dir_all(child.parent().unwrap()).unwrap();
+    git(
+        &repo.primary,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature/herdr-child",
+            child.to_str().unwrap(),
+            "main",
+        ],
+    );
     let tools = FakeTools::new(false);
     let output = tools
         .command(&repo.primary)
-        .args(["prune", "--all", "--yes"])
+        .args(["prune", "--yes"])
         .env("HERDR_ENV", "1")
         .env("HERDR_WORKSPACE_ID", "source-id")
         .env(
             "WT_HERDR_LIST",
-            herdr_list(&repo.primary, &[(&repo.linked, None)]),
+            herdr_list(&repo.primary, &[(&child, None)]),
         )
         .output()
         .unwrap();
@@ -1110,8 +1144,8 @@ fn active_herdr_prune_without_child_id_uses_git_and_keeps_branch() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!repo.linked.exists());
-    assert!(branch_exists(&repo.primary, "feature/list"));
+    assert!(!child.exists());
+    assert!(branch_exists(&repo.primary, "feature/herdr-child"));
     assert!(!tools.lines().iter().any(|line| line.contains("<remove>")));
     assert!(tools.lines().iter().any(|line| line
         == &format!(
@@ -1366,8 +1400,9 @@ fn gc_runs_after_git_create_remove_and_once_per_prune_batch() {
         String::from_utf8_lossy(&output.stderr)
     );
     tools.await_nix(2);
-    let a = repo.primary.parent().unwrap().join("a");
-    let b = repo.primary.parent().unwrap().join("b");
+    let a = repo.primary.join(".worktrees/a");
+    let b = repo.primary.join(".worktrees/b");
+    fs::create_dir_all(a.parent().unwrap()).unwrap();
     git(
         &repo.primary,
         &["worktree", "add", "-b", "feature/a", a.to_str().unwrap()],
@@ -1378,7 +1413,7 @@ fn gc_runs_after_git_create_remove_and_once_per_prune_batch() {
     );
     let output = tools
         .command(&repo.primary)
-        .args(["prune", "--all", "--yes"])
+        .args(["prune", "--yes"])
         .output()
         .unwrap();
     assert!(

@@ -265,11 +265,9 @@ impl Herdr {
         )
     }
 
-    pub fn remove(&self, repo_root: &Path, workspace_id: &str, force: bool) -> Result<()> {
+    pub fn remove(&self, repo_root: &Path, workspace_id: &str, force: u8) -> Result<()> {
         let mut args = vec!["worktree", "remove", "--workspace", workspace_id];
-        if force {
-            args.push("--force");
-        }
+        args.extend(std::iter::repeat_n("--force", force.min(2) as usize));
         self.run(repo_root, &args)
     }
 

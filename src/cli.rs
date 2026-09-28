@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 
 use crate::git::RepoContext;
 use crate::integrations::herdr::Herdr;
@@ -34,12 +34,12 @@ enum Commands {
     Remove { target: Option<String> },
     /// Preview and remove eligible worktrees.
     Prune {
-        /// Deprecated alias for the default three-day cleanup.
+        /// Deprecated alias for the default cleanup.
         #[arg(long)]
         stale: bool,
-        /// Force-remove all registered worktrees except the primary and current worktrees.
-        #[arg(long)]
-        all: bool,
+        /// Force-remove dirty worktrees; repeat to remove locked worktrees.
+        #[arg(short = 'f', long, visible_alias = "all", action = ArgAction::Count)]
+        force: u8,
         /// Remove without confirmation.
         #[arg(long)]
         yes: bool,
@@ -136,12 +136,12 @@ pub fn run() -> anyhow::Result<()> {
                 std::env::var_os("WT_SHELL_PATH_FILE").map(std::path::PathBuf::from);
             remove(&repo, target.as_deref(), shell_path_file.as_deref())?;
         }
-        Commands::Prune { stale, all, yes } => {
-            let repo = RepoContext::discover(&std::env::current_dir()?)?;
+        Commands::Prune { stale, force, yes } => {
+            let folder = std::env::current_dir()?;
             if stale {
                 eprintln!("warning: --stale is deprecated; it is now the default behavior");
             }
-            prune(&repo, PruneOptions { all, yes })?;
+            prune(&folder, PruneOptions { force, yes })?;
         }
         Commands::Config { command } => match command {
             ConfigCommands::Shell { command } => match command {
