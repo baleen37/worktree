@@ -26,10 +26,20 @@ impl Repo {
         std::fs::create_dir_all(&root).unwrap();
         let primary = root.join("main checkout");
         git(&root, &["init", "-b", "main", primary.to_str().unwrap()]);
-        std::fs::write(primary.join(".gitignore"), "/.worktrees/\n").unwrap();
-        std::fs::write(primary.join("README.md"), "initial\n").unwrap();
-        git(&primary, &["add", "."]);
-        commit(&primary, "initial");
+        std::fs::write(primary.join(".git/info/exclude"), "/.worktrees/\n").unwrap();
+        git(
+            &primary,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        );
         Self {
             _temp: temp,
             root,
