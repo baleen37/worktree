@@ -664,10 +664,12 @@ pub fn switch_existing(
         .into_iter()
         .find(|entry| entry.branch.as_deref() == Some(branch))
     {
-        if let Some(herdr) = Herdr::active(&repo.primary_root)? {
+        let herdr = Herdr::active(&repo.primary_root)?;
+        if let Some(herdr) = &herdr {
             herdr.open(&repo.primary_root, &entry.path)?;
+        } else {
+            write_path(shell_path_file, &entry.path)?;
         }
-        write_path(shell_path_file, &entry.path)?;
         return Ok(entry.path);
     }
 
@@ -680,7 +682,8 @@ pub fn switch_existing(
     }
 
     let target_text = target.to_str().context("worktree path is not UTF-8")?;
-    if let Some(herdr) = Herdr::active(&repo.primary_root)? {
+    let herdr = Herdr::active(&repo.primary_root)?;
+    if let Some(herdr) = &herdr {
         let base = if is_remote_branch {
             &start_point
         } else {
@@ -711,7 +714,9 @@ pub fn switch_existing(
         )?;
     }
     nix::start();
-    write_path(shell_path_file, &target)?;
+    if herdr.is_none() {
+        write_path(shell_path_file, &target)?;
+    }
     Ok(target)
 }
 
@@ -758,7 +763,8 @@ pub fn create_branch(
         bail!("worktree path already exists: {}", target.display());
     }
     let target_text = target.to_str().context("worktree path is not UTF-8")?;
-    if let Some(herdr) = Herdr::active(&repo.primary_root)? {
+    let herdr = Herdr::active(&repo.primary_root)?;
+    if let Some(herdr) = &herdr {
         herdr.create(&repo.primary_root, name, &repo.base_branch, &target)?;
     } else {
         git_text(
@@ -775,7 +781,9 @@ pub fn create_branch(
         )?;
     }
     nix::start();
-    write_path(shell_path_file, &target)?;
+    if herdr.is_none() {
+        write_path(shell_path_file, &target)?;
+    }
     Ok(target)
 }
 

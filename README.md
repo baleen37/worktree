@@ -22,6 +22,8 @@ wt list
 
 Shell integration lets `wt switch` and `wt remove` change the calling shell's directory. Without it, `wt switch` prints the selected path. `wt config shell install` adds startup blocks for zsh, bash, and fish.
 
+In Herdr, `wt switch` opens and focuses the target workspace while leaving the calling shell in its current worktree.
+
 ## Install
 
 ### Cargo
