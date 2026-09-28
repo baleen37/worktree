@@ -216,6 +216,93 @@ fn shell_wrappers_change_to_path_with_spaces() {
 }
 
 #[test]
+fn shell_wrappers_keep_root_when_herdr_opens_or_fails_to_open() {
+    let repo = GitRepo::new();
+    let tools = TestWt::new();
+    let home = tempfile::tempdir().unwrap();
+    let bin = home.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    std::os::unix::fs::symlink(assert_cmd::cargo::cargo_bin("wt"), bin.join("wt")).unwrap();
+
+    let herdr = bin.join("herdr");
+    std::fs::write(
+        &herdr,
+        "#!/bin/sh\ncase \"$1 $2\" in\n  'worktree list') printf '%s\\n' \"$WT_HERDR_LIST\" ;;\n  'worktree open') printf '%s\\n' \"$*\" >> \"$WT_HERDR_LOG\"; if [ \"$WT_HERDR_FAIL\" = 1 ]; then exit 31; fi ;;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&herdr, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let herdr_list = serde_json::json!({
+        "result": {
+            "source": {
+                "source_workspace_id": "source-id",
+                "repo_root": repo.primary.to_str().unwrap(),
+            },
+            "worktrees": [{
+                "path": repo.linked.to_str().unwrap(),
+                "open_workspace_id": "linked-id",
+            }],
+        },
+    })
+    .to_string();
+    let herdr_log = home.path().join("herdr-calls");
+
+    for shell in ["zsh", "bash", "fish"] {
+        let binary = std::env::var(format!("WT_TEST_{}", shell.to_uppercase()))
+            .unwrap_or_else(|_| shell.into());
+        let init = if shell == "fish" {
+            "wt config shell init fish | source".to_owned()
+        } else {
+            format!("eval \"$(wt config shell init {shell})\"")
+        };
+        let script = home.path().join(format!("herdr.{shell}"));
+        std::fs::write(
+            &script,
+            format!(
+                "{init}\ncd \"{}\"\nwt switch feature/list\npwd\n",
+                repo.primary.display()
+            ),
+        )
+        .unwrap();
+
+        for fail in [false, true] {
+            let output = Command::new(&binary)
+                .arg(&script)
+                .env("PATH", tools.path_with(&bin))
+                .env("HOME", home.path())
+                .env("XDG_CONFIG_HOME", home.path().join("config"))
+                .env("HERDR_ENV", "1")
+                .env("HERDR_WORKSPACE_ID", "source-id")
+                .env("WT_HERDR_LIST", &herdr_list)
+                .env("WT_HERDR_LOG", &herdr_log)
+                .env("WT_HERDR_FAIL", if fail { "1" } else { "0" })
+                .output()
+                .unwrap_or_else(|err| panic!("{shell} unavailable at {binary}: {err}"));
+
+            assert!(
+                output.status.success(),
+                "{shell}, fail={fail}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap().trim(),
+                repo.primary.display().to_string(),
+                "{shell}, fail={fail}"
+            );
+            if fail {
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains("herdr worktree open failed")
+                );
+            }
+        }
+    }
+
+    let calls = std::fs::read_to_string(herdr_log).unwrap();
+    assert_eq!(calls.lines().count(), 6);
+    assert!(calls.lines().all(|line| line.contains("--focus")));
+}
+
+#[test]
 fn shell_wrappers_apply_safe_path_after_failure_and_preserve_status() {
     let repo = GitRepo::new();
     let tools = TestWt::new();

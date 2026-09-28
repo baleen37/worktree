@@ -1204,6 +1204,58 @@ fn active_herdr_opens_registered_worktree_and_creates_for_unattached_branch() {
 }
 
 #[test]
+fn active_herdr_switch_paths_leave_shell_path_file_empty() {
+    let repo = GitRepo::with_origin();
+    let tools = FakeTools::new(false);
+    let shell_path_file = repo.primary.parent().unwrap().join("shell-path");
+    fs::write(&shell_path_file, "").unwrap();
+
+    let output = tools
+        .command(&repo.linked)
+        .args(["switch", "-c", "feature/new"])
+        .env("HERDR_ENV", "1")
+        .env("HERDR_WORKSPACE_ID", "linked-id")
+        .env("WT_HERDR_LIST", herdr_list(&repo.primary, &[]))
+        .env("WT_SHELL_PATH_FILE", &shell_path_file)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(&shell_path_file).unwrap(), "");
+    assert!(tools.lines().iter().any(|line| line == &format!(
+        "herdr <worktree> <create> <--workspace> <source-id> <--branch> <feature/new> <--base> <main> <--path> <{}> <--focus>",
+        repo.primary.join(".worktrees/feature-new").display()
+    )));
+
+    let output = tools
+        .command(&repo.primary)
+        .args(["switch", "feature/list"])
+        .env("HERDR_ENV", "1")
+        .env("HERDR_WORKSPACE_ID", "source-id")
+        .env(
+            "WT_HERDR_LIST",
+            herdr_list(&repo.primary, &[(&repo.linked, Some("linked-id"))]),
+        )
+        .env("WT_SHELL_PATH_FILE", &shell_path_file)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(shell_path_file).unwrap(), "");
+    assert!(tools.lines().iter().any(|line| line
+        == &format!(
+            "herdr <worktree> <open> <--workspace> <source-id> <--path> <{}> <--focus>",
+            repo.linked.display()
+        )));
+}
+
+#[test]
 fn active_herdr_creates_remote_branch_from_origin_and_sets_upstream() {
     let repo = GitRepo::with_origin();
     git(&repo.primary, &["branch", "feature/remote"]);
