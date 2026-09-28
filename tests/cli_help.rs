@@ -17,6 +17,18 @@ fn help_lists_v1_commands() {
 }
 
 #[test]
+fn prune_help_describes_force_alias_and_locked_worktrees() {
+    Command::cargo_bin("wt")
+        .unwrap()
+        .args(["prune", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--force"))
+        .stdout(predicate::str::contains("--all"))
+        .stdout(predicate::str::contains("locked"));
+}
+
+#[test]
 fn version_matches_package_version() {
     Command::cargo_bin("wt")
         .unwrap()

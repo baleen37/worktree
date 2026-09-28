@@ -28,19 +28,19 @@ In Herdr, `wt switch` opens and focuses the target workspace while leaving the c
 
 ### Cargo
 
-After `worktree-cli` v0.1.8 is published to crates.io:
+After `worktree-cli` v0.1.9 is published to crates.io:
 
 ```sh
-cargo install worktree-cli --version 0.1.8 --locked
+cargo install worktree-cli --version 0.1.9 --locked
 ```
 
 ### macOS and Linux
 
-After the `v0.1.8` GitHub Release is published, install that pinned version with the cargo-dist shell installer:
+After the `v0.1.9` GitHub Release is published, install that pinned version with the cargo-dist shell installer:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/baleen37/worktree/releases/download/v0.1.8/worktree-cli-installer.sh | sh
+  https://github.com/baleen37/worktree/releases/download/v0.1.9/worktree-cli-installer.sh | sh
 ```
 
 Linux binaries require glibc 2.35 or newer. Use the Nix flake on older glibc systems or NixOS.
@@ -52,7 +52,7 @@ The installer places `wt` in `CARGO_HOME/bin` (usually `~/.cargo/bin`) and attem
 The shell installer targets macOS and Linux and does not support NixOS. Install from the Nix flake instead:
 
 ```bash
-nix profile install github:baleen37/worktree/v0.1.8
+nix profile install github:baleen37/worktree/v0.1.9
 ```
 
 Home Manager configurations can install the flake package declaratively.
@@ -62,7 +62,7 @@ Home Manager configurations can install the flake package declaratively.
 This example installs the macOS ARM64 archive. On Linux, set `archive` to `worktree-cli-x86_64-unknown-linux-gnu.tar.xz` or `worktree-cli-aarch64-unknown-linux-gnu.tar.xz`. The commands require the GitHub CLI (`gh`).
 
 ```sh
-tag="v0.1.8"
+tag="v0.1.9"
 archive="worktree-cli-aarch64-apple-darwin.tar.xz"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -79,7 +79,7 @@ tar -xf "$tmp_dir/$archive" -C "$tmp_dir/extracted"
 install -m 755 "$tmp_dir/extracted/${archive%.tar.xz}/wt" "$install_dir/wt"
 ```
 
-Replace `v0.1.8` with the release tag you want to install. `gh release download` fetches the unified checksum file and all platform archives so `sha256.sum` can verify every archive.
+Replace `v0.1.9` with the release tag you want to install. `gh release download` fetches the unified checksum file and all platform archives so `sha256.sum` can verify every archive.
 
 ## Switching and listing worktrees
 
@@ -98,11 +98,11 @@ Run `wt merge` from a feature worktree to merge it into the local `main` or `mas
 
 ## Pruning worktrees
 
-`wt prune` previews clean, branch-attached worktrees where the later of the directory creation time and checked-out commit time is at least three days old. If the filesystem does not provide a creation time, `wt` uses the directory modification time. This applies to merged and unmerged branches. The primary, base, and current worktrees are kept. A terminal run asks before removal; a non-interactive run previews only. Pass `--yes` to remove without prompting.
+`wt prune` scans the current directory and its subdirectories, including hidden directories, without following symbolic links. It can run outside a Git repository and finds linked worktrees registered by any repository under that folder. The primary checkout, the worktree at the scan root, and paths outside the folder are kept. By default it removes clean linked worktrees regardless of age, merge status, or detached state. Dirty worktrees and worktrees whose status cannot be read are kept.
 
-`wt prune --all` force-removes every registered worktree except the primary and current worktrees, including the base worktree when it is not current, dirty worktrees, locked worktrees, detached worktrees, and paths outside the repository. Uncommitted files in removed worktrees are lost; branch references are kept. Nested worktrees are removed from child to parent, while a parent containing a kept primary or current worktree is kept. When run from an active Herdr workspace, `wt prune` removes open child workspaces through Herdr and keeps Herdr state synchronized with Git. Outside Herdr, it uses Git directly.
+A terminal run asks before removal; a non-interactive run previews only. Pass `--yes` to remove without prompting. Use `-f` or `--force` to include dirty worktrees; `--all` is an alias. Repeat the force option (`-ff` or `--force --force`) to remove Git-locked worktrees. Branch references are kept, and nested worktrees are removed from child to parent. When run from an active Herdr workspace, Herdr synchronization applies only to that repository.
 
-`--stale` remains as a deprecated alias for the default three-day cleanup.
+`--stale` remains as a deprecated alias for the default cleanup and prints a warning.
 
 ## License
 
