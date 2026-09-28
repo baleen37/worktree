@@ -1,12 +1,12 @@
 # `wt` 공개 릴리스
 
-갱신: 2026-09-28. 현재 최신 릴리스는 `v0.1.7`이며 PR #21에서 준비했다. `v0.1.0`과 `v0.1.2`는 철회했고 태그를 재사용하지 않는다. `worktree-cli 0.1.2` crate는 yank됐고 GitHub Release와 tag도 삭제했다. `v0.1.3` tag는 남아 있지만 Linux 빌드에서 Cargo 설치 단계가 건너뛰어져 릴리스 workflow가 실패했다. crate 게시와 GitHub Release 생성 전 실패했으므로 tag는 감사 기록으로 보존하고 재사용하지 않는다. PR #10에서 workflow를 수정했다. 당시 `0.1.4`를 대체 버전으로 사용했고 `main`의 nixpkgs pin은 `34ca302`였다. `v0.1.1`은 기존 GitHub 릴리스로 남아 있다.
+갱신: 2026-09-28. 이번 릴리스 준비 대상은 `v0.1.8`이다. 직전 릴리스는 `v0.1.7`이며 PR #21에서 준비했다. `v0.1.0`과 `v0.1.2`는 철회했고 태그를 재사용하지 않는다. `worktree-cli 0.1.2` crate는 yank됐고 GitHub Release와 tag도 삭제했다. `v0.1.3` tag는 남아 있지만 Linux 빌드에서 Cargo 설치 단계가 건너뛰어져 릴리스 workflow가 실패했다. crate 게시와 GitHub Release 생성 전 실패했으므로 tag는 감사 기록으로 보존하고 재사용하지 않는다. PR #10에서 workflow를 수정했다. 당시 `0.1.4`를 대체 버전으로 사용했고 `main`의 nixpkgs pin은 `34ca302`였다. `v0.1.1`은 기존 GitHub 릴리스로 남아 있다.
 
 ## 배포 경로
 
-- crates.io: `cargo install worktree-cli --version 0.1.7 --locked`
+- crates.io: `cargo install worktree-cli --version 0.1.8 --locked`
 - macOS와 Linux: cargo-dist 셸 설치기 `worktree-cli-installer.sh`
-- NixOS와 선언적 설치: Flake 참조 `github:baleen37/worktree/v0.1.7`
+- NixOS와 선언적 설치: Flake 참조 `github:baleen37/worktree/v0.1.8`
 - 실행 파일 이름은 `wt`를 유지한다. Cargo library 이름은 기존 Rust 코드와의 호환을 위해 `worktree`로 유지한다.
 - cargo-dist 아카이브 접두사는 `worktree-cli-`가 된다. 대상은 `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`다.
 - `nix flake update`는 `nixpkgs-unstable`의 `flake.lock` revision을 갱신한다. Nix 패키지 버전은 `Cargo.toml`에서 읽으므로 앱 버전은 Cargo manifest에서 올린다.
@@ -32,7 +32,7 @@ Trusted Publisher 등록값:
 - 계획의 Linux runner가 Ubuntu 24.04이고 Linux 아카이브가 Jammy 컨테이너에서 빌드되는지 확인한다.
 - Rust, 셸 시나리오, 세 Nix system 빌드와 `cargo publish --dry-run --locked`를 통과시킨다.
 - 게시 뒤 Release asset의 체크섬과 각 아카이브 attestation을 확인한다.
-- macOS ARM64와 Linux x86_64/ARM64에서 태그 고정 설치기로 `wt --help`를 확인한다. Nix는 `nix profile install github:baleen37/worktree/v0.1.7`로 확인한다.
+- macOS ARM64와 Linux x86_64/ARM64에서 태그 고정 설치기로 `wt --help`를 확인한다. Nix는 `nix profile install github:baleen37/worktree/v0.1.8`로 확인한다.
 
 ## 롤백
 
