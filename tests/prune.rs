@@ -185,6 +185,30 @@ fn prune_scans_multiple_repositories_from_a_non_git_directory_and_keeps_outside_
 }
 
 #[test]
+fn prune_skips_missing_gitdir_marker_and_removes_valid_worktree() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let scope = root.join("scope");
+    let repo = Repo::in_folder(scope.join("repo"), None);
+    let candidate = repo.add_candidate("feature/candidate");
+    let orphan = scope.join("orphan-worktree");
+    std::fs::create_dir_all(&orphan).unwrap();
+    let missing_gitdir = root.join("missing-repo/.git/worktrees/orphan-worktree");
+    std::fs::write(
+        orphan.join(".git"),
+        format!("gitdir: {}\n", missing_gitdir.display()),
+    )
+    .unwrap();
+
+    let output = repo.run_from(&scope, &["prune", "--yes"]);
+
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("orphan-worktree"));
+    assert!(!candidate.exists());
+    assert!(orphan.exists());
+}
+
+#[test]
 fn default_removes_young_unmerged_and_detached_clean_worktrees_but_keeps_dirty() {
     let repo = Repo::new();
     let young = repo.add_candidate("feature/young");
