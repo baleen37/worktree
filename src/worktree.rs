@@ -230,10 +230,43 @@ struct PrunePlan {
     current_repository: Option<(PathBuf, PathBuf)>,
 }
 
+fn has_missing_gitdir_target(directory: &Path) -> Result<bool> {
+    let marker = directory.join(".git");
+    let contents = std::fs::read_to_string(&marker)
+        .with_context(|| format!("could not read {}", marker.display()))?;
+    let Some(target) = contents
+        .strip_prefix("gitdir: ")
+        .map(|target| target.trim_end_matches(['\r', '\n']))
+    else {
+        return Ok(false);
+    };
+    let target = PathBuf::from(target);
+    let target = if target.is_absolute() {
+        target
+    } else {
+        directory.join(target)
+    };
+    match std::fs::metadata(&target) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error)
+            .with_context(|| format!("could not inspect gitdir target {}", target.display())),
+    }
+}
+
 fn collect_git_roots(directory: &Path, roots: &mut Vec<PathBuf>) -> Result<()> {
     let marker = directory.join(".git");
     match std::fs::symlink_metadata(&marker) {
-        Ok(metadata) if !metadata.file_type().is_symlink() => roots.push(directory.to_owned()),
+        Ok(metadata) if !metadata.file_type().is_symlink() => {
+            if metadata.is_file() && has_missing_gitdir_target(directory)? {
+                eprintln!(
+                    "warning: skipping stale Git worktree marker at {}: gitdir target does not exist",
+                    directory.display()
+                );
+            } else {
+                roots.push(directory.to_owned());
+            }
+        }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
