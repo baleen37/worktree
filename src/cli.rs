@@ -37,8 +37,11 @@ enum Commands {
         /// Deprecated alias for the default cleanup.
         #[arg(long)]
         stale: bool,
+        /// Include worktrees that look in use (unmerged, recently active, or open).
+        #[arg(long)]
+        all: bool,
         /// Force-remove dirty worktrees; repeat to remove locked worktrees.
-        #[arg(short = 'f', long, visible_alias = "all", action = ArgAction::Count)]
+        #[arg(short = 'f', long, action = ArgAction::Count)]
         force: u8,
         /// Remove without confirmation.
         #[arg(long)]
@@ -136,12 +139,17 @@ pub fn run() -> anyhow::Result<()> {
                 std::env::var_os("WT_SHELL_PATH_FILE").map(std::path::PathBuf::from);
             remove(&repo, target.as_deref(), shell_path_file.as_deref())?;
         }
-        Commands::Prune { stale, force, yes } => {
+        Commands::Prune {
+            stale,
+            all,
+            force,
+            yes,
+        } => {
             let folder = std::env::current_dir()?;
             if stale {
                 eprintln!("warning: --stale is deprecated; it is now the default behavior");
             }
-            prune(&folder, PruneOptions { force, yes })?;
+            prune(&folder, PruneOptions { all, force, yes })?;
         }
         Commands::Config { command } => match command {
             ConfigCommands::Shell { command } => match command {

@@ -935,7 +935,7 @@ fn active_herdr_prune_force_removes_dirty_open_child_preserves_branch_and_focus(
     let tools = FakeTools::new(true);
     let output = tools
         .command(&repo.primary)
-        .args(["prune", "--force", "--yes"])
+        .args(["prune", "--all", "--force", "--yes"])
         .env("HERDR_ENV", "1")
         .env("HERDR_WORKSPACE_ID", "source-id")
         .env(
@@ -1031,7 +1031,7 @@ fn active_herdr_prune_uses_herdr_only_for_the_callers_repository() {
     let tools = FakeTools::new(false);
     let output = tools
         .command(&repo.primary)
-        .args(["prune", "--yes"])
+        .args(["prune", "--all", "--yes"])
         .env("HERDR_ENV", "1")
         .env("HERDR_WORKSPACE_ID", "source-id")
         .env(
@@ -1087,7 +1087,7 @@ fn active_herdr_prune_failure_does_not_git_remove_same_candidate() {
     let tools = FakeTools::new(false);
     let output = tools
         .command(&repo.primary)
-        .args(["prune", "--yes"])
+        .args(["prune", "--all", "--yes"])
         .env("HERDR_ENV", "1")
         .env("HERDR_WORKSPACE_ID", "source-id")
         .env(
@@ -1130,7 +1130,7 @@ fn active_herdr_prune_without_child_id_uses_git_and_keeps_branch() {
     let tools = FakeTools::new(false);
     let output = tools
         .command(&repo.primary)
-        .args(["prune", "--yes"])
+        .args(["prune", "--all", "--yes"])
         .env("HERDR_ENV", "1")
         .env("HERDR_WORKSPACE_ID", "source-id")
         .env(
@@ -1413,7 +1413,7 @@ fn gc_runs_after_git_create_remove_and_once_per_prune_batch() {
     );
     let output = tools
         .command(&repo.primary)
-        .args(["prune", "--yes"])
+        .args(["prune", "--all", "--yes"])
         .output()
         .unwrap();
     assert!(
@@ -1435,7 +1435,7 @@ fn gc_runs_after_git_create_remove_and_once_per_prune_batch() {
     );
     let output = tools
         .command(&repo.primary)
-        .args(["prune", "--yes"])
+        .args(["prune", "--all", "--yes"])
         .output()
         .unwrap();
     assert!(output.status.success());
