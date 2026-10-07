@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use console::{Style, measure_text_width, truncate_str};
@@ -195,6 +195,7 @@ impl WorktreeInfo {
 }
 
 pub struct PruneOptions {
+    pub all: bool,
     pub force: u8,
     pub yes: bool,
 }
@@ -207,6 +208,7 @@ pub struct PruneOutcome {
 
 struct RegisteredWorktree {
     path: PathBuf,
+    branch: Option<String>,
     is_primary: bool,
     is_locked: bool,
 }
@@ -221,9 +223,13 @@ struct PruneCandidate {
     path: PathBuf,
     common_dir: PathBuf,
     primary_root: PathBuf,
+    /// Why the default prune treats this worktree as unused; `None` under `--all`.
+    reason: Option<String>,
 }
 
 struct PrunePlan {
+    root: PathBuf,
+    skipped: Vec<PathBuf>,
     keep: usize,
     candidates: Vec<PruneCandidate>,
     repositories: Vec<PruneRepository>,
@@ -254,28 +260,144 @@ fn has_missing_gitdir_target(directory: &Path) -> Result<bool> {
     }
 }
 
-fn collect_git_roots(directory: &Path, roots: &mut Vec<PathBuf>) -> Result<()> {
+/// Single-line status on stderr while prune runs; disabled when stderr is not a terminal.
+struct Progress {
+    term: Option<console::Term>,
+    shown: bool,
+    last: Instant,
+    frame: usize,
+    dirs: usize,
+    root: PathBuf,
+}
+
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+impl Progress {
+    fn new() -> Self {
+        let term = console::Term::stderr();
+        Self {
+            term: term.is_term().then_some(term),
+            shown: false,
+            last: Instant::now(),
+            frame: 0,
+            dirs: 0,
+            root: PathBuf::new(),
+        }
+    }
+
+    fn tick(&mut self, message: impl FnOnce() -> String) {
+        if self.shown && self.last.elapsed() < Duration::from_millis(100) {
+            return;
+        }
+        self.show(&message());
+    }
+
+    fn show(&mut self, message: &str) {
+        let Some(term) = &self.term else {
+            return;
+        };
+        let width = (term.size().1 as usize).saturating_sub(1);
+        let line = format!("{} {message}", SPINNER[self.frame % SPINNER.len()]);
+        let _ = term.clear_line();
+        let _ = term.write_str(&truncate_str(&line, width, "…"));
+        self.frame += 1;
+        self.shown = true;
+        self.last = Instant::now();
+    }
+
+    fn clear(&mut self) {
+        if self.shown
+            && let Some(term) = &self.term
+        {
+            let _ = term.clear_line();
+        }
+        self.shown = false;
+    }
+
+    fn warn(&mut self, message: &str) {
+        self.clear();
+        eprintln!("warning: {message}");
+    }
+}
+
+fn group_digits(value: usize) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+/// Shortens `path` relative to `base` for display; falls back to the full path.
+fn relative_display(path: &Path, base: &Path) -> String {
+    match path.strip_prefix(base) {
+        Ok(relative) if relative.as_os_str().is_empty() => ".".to_owned(),
+        Ok(relative) => relative.display().to_string(),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+impl Drop for Progress {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+fn collect_git_roots(
+    directory: &Path,
+    roots: &mut Vec<PathBuf>,
+    skipped: &mut Vec<PathBuf>,
+    progress: &mut Progress,
+) -> Result<()> {
+    progress.dirs += 1;
+    let dirs = progress.dirs;
+    let place = relative_display(directory, &progress.root);
+    progress.tick(|| {
+        format!(
+            "scanning  {} dirs · {} repos  {}",
+            group_digits(dirs),
+            roots.len(),
+            Style::new().dim().apply_to(place)
+        )
+    });
     let marker = directory.join(".git");
     match std::fs::symlink_metadata(&marker) {
         Ok(metadata) if !metadata.file_type().is_symlink() => {
             if metadata.is_file() && has_missing_gitdir_target(directory)? {
-                eprintln!(
-                    "warning: skipping stale Git worktree marker at {}: gitdir target does not exist",
+                progress.warn(&format!(
+                    "skipping stale Git worktree marker at {}: gitdir target does not exist",
                     directory.display()
-                );
+                ));
             } else {
                 roots.push(directory.to_owned());
             }
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            skipped.push(directory.to_owned());
+            return Ok(());
+        }
         Err(error) => {
             return Err(error).with_context(|| format!("could not inspect {}", marker.display()));
         }
     }
 
-    let mut children = std::fs::read_dir(directory)
-        .with_context(|| format!("could not scan {}", directory.display()))?
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            skipped.push(directory.to_owned());
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("could not scan {}", directory.display()));
+        }
+    };
+    let mut children = entries
         .collect::<std::io::Result<Vec<_>>>()
         .with_context(|| format!("could not scan {}", directory.display()))?;
     children.sort_by_key(std::fs::DirEntry::path);
@@ -287,7 +409,7 @@ fn collect_git_roots(directory: &Path, roots: &mut Vec<PathBuf>) -> Result<()> {
         if !file_type.is_dir() || file_type.is_symlink() || child.file_name() == ".git" {
             continue;
         }
-        collect_git_roots(&path, roots)?;
+        collect_git_roots(&path, roots, skipped, progress)?;
     }
     Ok(())
 }
@@ -339,6 +461,10 @@ fn parse_worktree_fields(
     };
     Ok(RegisteredWorktree {
         path,
+        branch: fields
+            .iter()
+            .find_map(|field| field.strip_prefix("branch refs/heads/"))
+            .map(str::to_owned),
         is_primary,
         is_locked: fields
             .iter()
@@ -373,14 +499,20 @@ fn current_repository(directory: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
     Ok(None)
 }
 
-fn scan_repositories(root: &Path) -> Result<Vec<PruneRepository>> {
+fn scan_repositories(
+    root: &Path,
+    progress: &mut Progress,
+) -> Result<(Vec<PruneRepository>, Vec<PathBuf>)> {
     let mut roots = Vec::new();
-    collect_git_roots(root, &mut roots)?;
+    let mut skipped = Vec::new();
+    collect_git_roots(root, &mut roots, &mut skipped, progress)?;
     roots.sort();
 
     let mut seen = BTreeSet::new();
     let mut repositories = Vec::new();
-    for command_root in roots {
+    let total = roots.len();
+    for (index, command_root) in roots.into_iter().enumerate() {
+        progress.tick(|| format!("reading   {}/{total} repos", index + 1));
         let common_dir = PathBuf::from(git_text(
             &command_root,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -414,7 +546,7 @@ fn scan_repositories(root: &Path) -> Result<Vec<PruneRepository>> {
             worktrees,
         });
     }
-    Ok(repositories)
+    Ok((repositories, skipped))
 }
 
 fn worktree_in_scope(path: &Path, root: &Path) -> Result<Option<PathBuf>> {
@@ -447,36 +579,219 @@ fn worktree_in_scope(path: &Path, root: &Path) -> Result<Option<PathBuf>> {
 }
 
 fn worktree_is_clean(path: &Path) -> Option<bool> {
+    // Skipping the optional index refresh keeps the index mtime intact for the idle check.
     let output = Command::new("git")
         .current_dir(path)
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .args(["status", "--porcelain", "--untracked-files=all"])
         .output()
         .ok()?;
     output.status.success().then_some(output.stdout.is_empty())
 }
 
-fn plan_prune(root: &Path, options: &PruneOptions) -> Result<PrunePlan> {
+const IDLE_AFTER: Duration = Duration::from_secs(3 * 24 * 60 * 60);
+
+/// Branches of `branches` that are finished: their upstream is gone, or they gained
+/// their own commits and those are now merged into the local main/master branch.
+fn finished_branches(common_dir: &Path, branches: &[&str]) -> Result<BTreeSet<String>> {
+    let mut finished = BTreeSet::new();
+    if branches.is_empty() {
+        return Ok(finished);
+    }
+    let tracking = git_text(
+        common_dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)%09%(upstream:track)",
+            "refs/heads",
+        ],
+    )?;
+    for line in tracking.lines() {
+        if let Some((branch, "[gone]")) = line.split_once('\t')
+            && branches.contains(&branch)
+        {
+            finished.insert(branch.to_owned());
+        }
+    }
+    let Some(base) = base_branch(common_dir) else {
+        return Ok(finished);
+    };
+    let merged = git_text(
+        common_dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            &format!("--merged=refs/heads/{base}"),
+            "refs/heads",
+        ],
+    )?;
+    for branch in merged.lines() {
+        if branch != base && branches.contains(&branch) && has_own_commits(common_dir, branch)? {
+            finished.insert(branch.to_owned());
+        }
+    }
+    Ok(finished)
+}
+
+fn base_branch(common_dir: &Path) -> Option<&'static str> {
+    ["main", "master"].into_iter().find(|branch| {
+        Command::new("git")
+            .current_dir(common_dir)
+            .args([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ])
+            .status()
+            .is_ok_and(|status| status.success())
+    })
+}
+
+/// A branch still at the commit it was created from has no work of its own, so being
+/// "merged" only means it was never used. Without a reflog the answer is unknown: keep.
+fn has_own_commits(common_dir: &Path, branch: &str) -> Result<bool> {
+    let reference = format!("refs/heads/{branch}");
+    let reflog = git_text(
+        common_dir,
+        &["reflog", "show", "--format=%H", &reference, "--"],
+    )
+    .unwrap_or_default();
+    let Some(created_at) = reflog.lines().last() else {
+        return Ok(false);
+    };
+    Ok(git_text(common_dir, &["rev-parse", &reference])? != created_at)
+}
+
+/// Working directories of running processes, so worktrees open in a shell or editor are kept.
+fn open_directories(progress: &mut Progress) -> Vec<PathBuf> {
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        return entries
+            .filter_map(|entry| std::fs::read_link(entry.ok()?.path().join("cwd")).ok())
+            .collect();
+    }
+    match Command::new("lsof")
+        .args(["-a", "-d", "cwd", "-Fn", "-w"])
+        .output()
+    {
+        Ok(output) => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix('n').map(PathBuf::from))
+            .collect(),
+        Err(error) => {
+            progress.warn(&format!(
+                "could not list open directories ({error}); open worktrees are not detected"
+            ));
+            Vec::new()
+        }
+    }
+}
+
+/// Latest sign of use: the checked-out commit, or Git touching the worktree's HEAD or index.
+fn last_activity(path: &Path) -> Option<SystemTime> {
+    let committed: u64 = git_text(path, &["log", "-1", "--format=%ct", "HEAD"])
+        .ok()?
+        .parse()
+        .ok()?;
+    let mut latest = UNIX_EPOCH + Duration::from_secs(committed);
+    let marker = std::fs::read_to_string(path.join(".git")).ok()?;
+    let git_dir = path.join(marker.strip_prefix("gitdir:")?.trim());
+    // The gitdir's own mtime moves whenever Git creates a lock file there, so only its
+    // creation time counts.
+    if let Ok(created) = std::fs::metadata(&git_dir).and_then(|metadata| metadata.created()) {
+        latest = latest.max(created);
+    }
+    for file in [git_dir.join("HEAD"), git_dir.join("index")] {
+        if let Ok(modified) = std::fs::metadata(file).and_then(|metadata| metadata.modified()) {
+            latest = latest.max(modified);
+        }
+    }
+    Some(latest)
+}
+
+fn idle_days(now: SystemTime, last_activity: SystemTime) -> Option<u64> {
+    let idle = now.duration_since(last_activity).ok()?;
+    (idle >= IDLE_AFTER).then_some(idle.as_secs() / (24 * 60 * 60))
+}
+
+/// Why the default prune may remove `worktree`, or `None` when it looks in use.
+fn unused_reason(
+    worktree: &RegisteredWorktree,
+    path: &Path,
+    finished: &BTreeSet<String>,
+    open: &[PathBuf],
+    now: SystemTime,
+) -> Option<String> {
+    if open.iter().any(|directory| directory.starts_with(path)) {
+        return None;
+    }
+    if worktree
+        .branch
+        .as_ref()
+        .is_some_and(|branch| finished.contains(branch))
+    {
+        return Some("merged".to_owned());
+    }
+    idle_days(now, last_activity(path)?).map(|days| format!("idle {days}d"))
+}
+
+fn plan_prune(root: &Path, options: &PruneOptions, progress: &mut Progress) -> Result<PrunePlan> {
     let root = root
         .canonicalize()
         .with_context(|| format!("could not resolve scan directory {}", root.display()))?;
-    let repositories = scan_repositories(&root)?;
+    progress.root = root.clone();
+    progress.dirs = 0;
+    let (repositories, skipped) = scan_repositories(&root, progress)?;
     let current_repository = current_repository(&root)?;
+    let total = repositories
+        .iter()
+        .map(|repository| repository.worktrees.len())
+        .sum::<usize>();
+    let open = if options.all {
+        Vec::new()
+    } else {
+        open_directories(progress)
+    };
+    let now = SystemTime::now();
     let mut entries = Vec::new();
     for repository in &repositories {
+        let finished = if options.all {
+            BTreeSet::new()
+        } else {
+            let branches = repository
+                .worktrees
+                .iter()
+                .filter_map(|worktree| worktree.branch.as_deref())
+                .collect::<Vec<_>>();
+            finished_branches(&repository.common_dir, &branches).with_context(|| {
+                format!(
+                    "could not check merged branches for {}",
+                    repository.primary_root.display()
+                )
+            })?
+        };
         for worktree in &repository.worktrees {
+            progress.tick(|| format!("checking  {}/{total} worktrees", entries.len() + 1));
             let Some(path) = worktree_in_scope(&worktree.path, &root)? else {
                 continue;
             };
             let is_scope_root = path == root;
-            let can_remove = !worktree.is_primary
+            let mut can_remove = !worktree.is_primary
                 && !is_scope_root
-                && (!worktree.is_locked || options.force >= 2)
-                && (options.force > 0 || worktree_is_clean(&path) == Some(true));
+                && (!worktree.is_locked || options.force >= 2);
+            let mut reason = None;
+            if can_remove && !options.all {
+                reason = unused_reason(worktree, &path, &finished, &open, now);
+                can_remove = reason.is_some();
+            }
+            can_remove =
+                can_remove && (options.force > 0 || worktree_is_clean(&path) == Some(true));
             entries.push((
                 PruneCandidate {
                     path,
                     common_dir: repository.common_dir.clone(),
                     primary_root: repository.primary_root.clone(),
+                    reason,
                 },
                 can_remove,
             ));
@@ -490,7 +805,8 @@ fn plan_prune(root: &Path, options: &PruneOptions) -> Result<PrunePlan> {
         let parent = &entries[index].0.path;
         if entries.iter().any(|(child, can_remove)| {
             child.path != *parent && child.path.starts_with(parent) && !can_remove
-        }) {
+        }) || skipped.iter().any(|path| path.starts_with(parent))
+        {
             entries[index].1 = false;
         }
     }
@@ -513,6 +829,8 @@ fn plan_prune(root: &Path, options: &PruneOptions) -> Result<PrunePlan> {
             .then_with(|| left.path.cmp(&right.path))
     });
     Ok(PrunePlan {
+        root,
+        skipped,
         keep,
         candidates,
         repositories,
@@ -554,20 +872,96 @@ fn prune_plan_outcome(plan: &PrunePlan) -> PruneOutcome {
     }
 }
 
-pub fn prune(folder: &Path, options: PruneOptions) -> Result<PruneOutcome> {
-    let mut plan = plan_prune(folder, &options)?;
-    let mut outcome = prune_plan_outcome(&plan);
-    println!("keep: {}", outcome.keep);
-    for path in &outcome.candidates {
-        println!("remove: {}", path.display());
+fn warn_skipped(plan: &PrunePlan) {
+    const SHOWN: usize = 3;
+    if plan.skipped.is_empty() {
+        return;
     }
+    let mut names = plan
+        .skipped
+        .iter()
+        .take(SHOWN)
+        .map(|path| relative_display(path, &plan.root))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if plan.skipped.len() > SHOWN {
+        names.push_str(&format!(" (+{})", plan.skipped.len() - SHOWN));
+    }
+    let noun = if plan.skipped.len() == 1 {
+        "directory"
+    } else {
+        "directories"
+    };
+    eprintln!(
+        "warning: skipped {} unreadable {noun}: {names}",
+        plan.skipped.len()
+    );
+}
+
+fn print_plan(plan: &PrunePlan) {
+    let bold = Style::new().bold();
+    let dim = Style::new().dim();
+    if plan.candidates.is_empty() {
+        println!("keep {} · nothing to remove", plan.keep);
+        return;
+    }
+    println!("keep {} · remove {}", plan.keep, plan.candidates.len());
+    let mut groups = plan
+        .candidates
+        .iter()
+        .map(|candidate| &candidate.primary_root)
+        .collect::<Vec<_>>();
+    groups.sort();
+    groups.dedup();
+    for primary_root in groups {
+        println!();
+        let label = match relative_display(primary_root, &plan.root) {
+            label if label == "." => primary_root
+                .file_name()
+                .map_or(label, |name| name.to_string_lossy().into_owned()),
+            label => label,
+        };
+        println!("  {}", bold.apply_to(label));
+        // Listed in removal order: nested worktrees come before their parents.
+        for candidate in plan
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.primary_root == *primary_root)
+        {
+            let base = if candidate.path.starts_with(primary_root) {
+                primary_root
+            } else {
+                &plan.root
+            };
+            let reason = candidate
+                .reason
+                .as_ref()
+                .map(|reason| format!("  {}", dim.apply_to(reason)))
+                .unwrap_or_default();
+            println!(
+                "    {} {}{reason}",
+                dim.apply_to("-"),
+                relative_display(&candidate.path, base)
+            );
+        }
+    }
+    println!();
+}
+
+pub fn prune(folder: &Path, options: PruneOptions) -> Result<PruneOutcome> {
+    let mut progress = Progress::new();
+    let mut plan = plan_prune(folder, &options, &mut progress)?;
+    progress.clear();
+    let mut outcome = prune_plan_outcome(&plan);
+    warn_skipped(&plan);
+    print_plan(&plan);
     if outcome.candidates.is_empty() {
         return Ok(outcome);
     }
     if !options.yes {
         let term = console::Term::stdout();
         if !term.is_term() {
-            println!("dry run");
+            println!("dry run: nothing removed (pass --yes to apply)");
             return Ok(outcome);
         }
         term.write_str("Apply? [y/N] ")?;
@@ -580,7 +974,7 @@ pub fn prune(folder: &Path, options: PruneOptions) -> Result<PruneOutcome> {
 
     // Re-scan after confirmation so failed discovery still happens before the first removal.
     let planned_paths = outcome.candidates.iter().cloned().collect::<BTreeSet<_>>();
-    plan = plan_prune(folder, &options)?;
+    plan = plan_prune(folder, &options, &mut progress)?;
     let new_paths = plan
         .candidates
         .iter()
@@ -628,7 +1022,13 @@ pub fn prune(folder: &Path, options: PruneOptions) -> Result<PruneOutcome> {
         .as_ref()
         .map(|(common_dir, _)| common_dir);
     let mut herdr_repo_removed = false;
-    for candidate in &plan.candidates {
+    let total = plan.candidates.len();
+    for (index, candidate) in plan.candidates.iter().enumerate() {
+        progress.show(&format!(
+            "removing  {}/{total}  {}",
+            index + 1,
+            relative_display(&candidate.path, &plan.root)
+        ));
         let belongs_to_caller = caller_common_dir == Some(&candidate.common_dir);
         let workspace_id = if belongs_to_caller {
             herdr
@@ -645,6 +1045,13 @@ pub fn prune(folder: &Path, options: PruneOptions) -> Result<PruneOutcome> {
         herdr_repo_removed |= belongs_to_caller;
         outcome.removed.push(candidate.path.clone());
     }
+    progress.clear();
+    let noun = if outcome.removed.len() == 1 {
+        "worktree"
+    } else {
+        "worktrees"
+    };
+    println!("removed {} {noun}", outcome.removed.len());
     if herdr_repo_removed && let Some(active_herdr) = herdr.as_ref() {
         let repository = herdr_repo.context("Herdr repository disappeared during prune")?;
         let caller_path = caller_path.context("Herdr caller worktree is unavailable")?;
@@ -1143,6 +1550,20 @@ pub(crate) fn parse_porcelain(text: &str) -> Result<Vec<WorktreeInfo>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_starts_at_three_days_after_the_last_activity() {
+        let last = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let day = Duration::from_secs(24 * 60 * 60);
+
+        assert_eq!(
+            idle_days(last + IDLE_AFTER - Duration::from_secs(1), last),
+            None
+        );
+        assert_eq!(idle_days(last + IDLE_AFTER, last), Some(3));
+        assert_eq!(idle_days(last + 10 * day, last), Some(10));
+        assert_eq!(idle_days(last - day, last), None);
+    }
 
     #[test]
     fn worktree_labels_fit_terminal_width_and_shorten_long_values() {
