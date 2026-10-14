@@ -1,4 +1,4 @@
-{ bash, coreutils, fish, gitMinimal, lib, makeWrapper, rustPlatform, systems, zsh }:
+{ bash, coreutils, fish, gitMinimal, lib, lsof, makeWrapper, rustPlatform, systems, zsh }:
 
 let
   cargoToml = builtins.fromTOML (builtins.readFile ../Cargo.toml);
@@ -12,7 +12,7 @@ rustPlatform.buildRustPackage {
   src = ../.;
   cargoLock.lockFile = ../Cargo.lock;
   nativeBuildInputs = [ makeWrapper ];
-  nativeCheckInputs = [ bash coreutils fish gitMinimal zsh ];
+  nativeCheckInputs = [ bash coreutils fish gitMinimal lsof zsh ];
 
   preBuild = remapBuildPath;
 
