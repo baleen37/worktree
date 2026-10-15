@@ -25,6 +25,28 @@ fn wt(args: &[&str], home: &Path) -> std::process::Output {
         .unwrap()
 }
 
+fn shell_binary(shell: &str) -> String {
+    std::env::var(shell_env(shell)).unwrap_or_else(|_| shell.into())
+}
+
+fn shell_env(shell: &str) -> String {
+    format!("WT_TEST_{}", shell.to_uppercase())
+}
+
+/// Skips a shell that is not installed locally. CI installs every shell, and an
+/// explicit `WT_TEST_<SHELL>` path must exist, so both fail instead.
+fn skip_missing_shell(shell: &str, binary: &str, err: std::io::Error) {
+    let in_ci =
+        std::env::var("CI").is_ok_and(|value| !matches!(value.as_str(), "" | "0" | "false"));
+    if err.kind() != std::io::ErrorKind::NotFound
+        || in_ci
+        || std::env::var_os(shell_env(shell)).is_some()
+    {
+        panic!("{shell} unavailable at {binary}: {err}");
+    }
+    eprintln!("skipping {shell}: {binary} not found");
+}
+
 #[test]
 fn init_outputs_safe_wrappers_for_all_shells() {
     let home = tempfile::tempdir().unwrap();
@@ -176,8 +198,7 @@ fn shell_wrappers_change_to_path_with_spaces() {
         std::os::unix::fs::symlink(assert_cmd::cargo::cargo_bin("wt"), bin.join("wt")).unwrap();
     }
     for shell in ["zsh", "bash", "fish"] {
-        let binary = std::env::var(format!("WT_TEST_{}", shell.to_uppercase()))
-            .unwrap_or_else(|_| shell.into());
+        let binary = shell_binary(shell);
         let script = home.path().join(format!("test.{shell}"));
         let init = if shell == "fish" {
             "wt config shell init fish | source".to_owned()
@@ -200,8 +221,14 @@ fn shell_wrappers_change_to_path_with_spaces() {
             .env_remove("HERDR_ENV")
             .env_remove("HERDR_WORKSPACE_ID")
             .env("HOME", home.path())
-            .output()
-            .unwrap_or_else(|err| panic!("{shell} unavailable at {binary}: {err}"));
+            .output();
+        let output = match output {
+            Ok(output) => output,
+            Err(err) => {
+                skip_missing_shell(shell, &binary, err);
+                continue;
+            }
+        };
         assert!(
             output.status.success(),
             "{shell}: {}",
@@ -247,9 +274,9 @@ fn shell_wrappers_keep_root_when_herdr_opens_or_fails_to_open() {
     .to_string();
     let herdr_log = home.path().join("herdr-calls");
 
+    let mut runs = 0;
     for shell in ["zsh", "bash", "fish"] {
-        let binary = std::env::var(format!("WT_TEST_{}", shell.to_uppercase()))
-            .unwrap_or_else(|_| shell.into());
+        let binary = shell_binary(shell);
         let init = if shell == "fish" {
             "wt config shell init fish | source".to_owned()
         } else {
@@ -276,8 +303,15 @@ fn shell_wrappers_keep_root_when_herdr_opens_or_fails_to_open() {
                 .env("WT_HERDR_LIST", &herdr_list)
                 .env("WT_HERDR_LOG", &herdr_log)
                 .env("WT_HERDR_FAIL", if fail { "1" } else { "0" })
-                .output()
-                .unwrap_or_else(|err| panic!("{shell} unavailable at {binary}: {err}"));
+                .output();
+            let output = match output {
+                Ok(output) => output,
+                Err(err) => {
+                    skip_missing_shell(shell, &binary, err);
+                    continue;
+                }
+            };
+            runs += 1;
 
             assert!(
                 output.status.success(),
@@ -297,8 +331,11 @@ fn shell_wrappers_keep_root_when_herdr_opens_or_fails_to_open() {
         }
     }
 
+    if runs == 0 {
+        return;
+    }
     let calls = std::fs::read_to_string(herdr_log).unwrap();
-    assert_eq!(calls.lines().count(), 6);
+    assert_eq!(calls.lines().count(), runs);
     assert!(calls.lines().all(|line| line.contains("--focus")));
 }
 
@@ -318,8 +355,7 @@ fn shell_wrappers_apply_safe_path_after_failure_and_preserve_status() {
     std::fs::set_permissions(&fake_wt, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     for shell in ["zsh", "bash", "fish"] {
-        let binary = std::env::var(format!("WT_TEST_{}", shell.to_uppercase()))
-            .unwrap_or_else(|_| shell.into());
+        let binary = shell_binary(shell);
         let init =
             String::from_utf8(wt(&["config", "shell", "init", shell], home.path()).stdout).unwrap();
         let command_status = if shell == "fish" {
@@ -341,8 +377,14 @@ fn shell_wrappers_apply_safe_path_after_failure_and_preserve_status() {
             .env("PATH", tools.path_with(&bin))
             .env("HOME", home.path())
             .env("WT_TEST_TARGET", &repo.primary)
-            .output()
-            .unwrap_or_else(|err| panic!("{shell} unavailable at {binary}: {err}"));
+            .output();
+        let output = match output {
+            Ok(output) => output,
+            Err(err) => {
+                skip_missing_shell(shell, &binary, err);
+                continue;
+            }
+        };
         assert!(
             output.status.success(),
             "{shell}: {}",
