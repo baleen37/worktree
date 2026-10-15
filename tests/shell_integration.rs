@@ -36,8 +36,9 @@ fn shell_env(shell: &str) -> String {
 /// Skips a shell that is not installed locally. CI installs every shell, and an
 /// explicit `WT_TEST_<SHELL>` path must exist, so both fail instead.
 fn skip_missing_shell(shell: &str, binary: &str, err: std::io::Error) {
-    let in_ci =
-        std::env::var("CI").is_ok_and(|value| !matches!(value.as_str(), "" | "0" | "false"));
+    let in_ci = std::env::var("CI").is_ok_and(|value| {
+        !(value.is_empty() || value == "0" || value.eq_ignore_ascii_case("false"))
+    });
     if err.kind() != std::io::ErrorKind::NotFound
         || in_ci
         || std::env::var_os(shell_env(shell)).is_some()
