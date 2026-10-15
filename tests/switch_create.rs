@@ -116,8 +116,9 @@ fn commit(cwd: &Path, message: &str) {
 }
 
 #[test]
-fn creates_explicit_branch_from_fast_forwarded_main() {
+fn creates_explicit_branch_from_origin_base() {
     let repo = Repo::new("main");
+    let old_head = git_text(&repo.primary, &["rev-parse", "HEAD"]);
     let remote_head = repo.remote_commit();
     let target = repo.primary.join(".worktrees/feature-new");
 
@@ -130,7 +131,7 @@ fn creates_explicit_branch_from_fast_forwarded_main() {
         .success()
         .stdout(format!("{}\n", target.display()));
 
-    assert_eq!(git_text(&repo.primary, &["rev-parse", "HEAD"]), remote_head);
+    assert_eq!(git_text(&repo.primary, &["rev-parse", "HEAD"]), old_head);
     assert_eq!(git_text(&target, &["rev-parse", "HEAD"]), remote_head);
     assert_eq!(
         git_text(&target, &["branch", "--show-current"]),
@@ -139,9 +140,14 @@ fn creates_explicit_branch_from_fast_forwarded_main() {
 }
 
 #[test]
-fn dirty_base_prevents_creation() {
+fn local_base_commits_and_changes_are_left_untouched() {
     let repo = Repo::new("main");
-    std::fs::write(repo.primary.join("README.md"), "dirty\n").unwrap();
+    std::fs::write(repo.primary.join("local.txt"), "local\n").unwrap();
+    git(&repo.primary, &["add", "."]);
+    commit(&repo.primary, "local advance");
+    let local_head = git_text(&repo.primary, &["rev-parse", "HEAD"]);
+    std::fs::write(repo.primary.join("remote.txt"), "dirty\n").unwrap();
+    let remote_head = repo.remote_commit();
     let target = repo.primary.join(".worktrees/feature-new");
 
     repo.wt
@@ -149,33 +155,23 @@ fn dirty_base_prevents_creation() {
         .current_dir(&repo.linked)
         .args(["switch", "-c", "feature/new"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("dirty"));
+        .success();
 
-    assert!(!target.exists());
-    assert!(!git_text(&repo.primary, &["branch", "--list", "feature/new"]).contains("feature/new"));
-}
-
-#[test]
-fn divergent_base_prevents_creation() {
-    let repo = Repo::new("main");
-    let old_head = git_text(&repo.primary, &["rev-parse", "HEAD"]);
-    std::fs::write(repo.primary.join("local.txt"), "local\n").unwrap();
-    git(&repo.primary, &["add", "."]);
-    commit(&repo.primary, "local advance");
-    repo.remote_commit();
-
-    repo.wt
-        .command()
-        .current_dir(&repo.linked)
-        .args(["switch", "-c", "feature/new"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("pull --ff-only"));
-
-    assert_ne!(git_text(&repo.primary, &["rev-parse", "HEAD"]), old_head);
-    assert!(!repo.primary.join(".worktrees/feature-new").exists());
-    assert!(git_text(&repo.primary, &["branch", "--list", "feature/new"]).is_empty());
+    assert_eq!(git_text(&target, &["rev-parse", "HEAD"]), remote_head);
+    assert_eq!(git_text(&repo.primary, &["rev-parse", "HEAD"]), local_head);
+    assert_eq!(
+        std::fs::read_to_string(repo.primary.join("remote.txt")).unwrap(),
+        "dirty\n"
+    );
+    assert!(
+        !ProcessCommand::new("git")
+            .current_dir(&target)
+            .args(["rev-parse", "--abbrev-ref", "@{upstream}"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
 }
 
 #[test]
@@ -215,20 +211,6 @@ fn existing_local_branch_is_rejected() {
         git_text(&repo.linked, &["branch", "--show-current"]),
         "feature/list"
     );
-}
-
-#[test]
-fn missing_checked_out_base_prevents_creation() {
-    let repo = Repo::new("main");
-    git(&repo.primary, &["checkout", "--detach"]);
-    repo.wt
-        .command()
-        .current_dir(&repo.linked)
-        .args(["switch", "-c", "feature/new"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("not checked out"));
-    assert!(!repo.primary.join(".worktrees/feature-new").exists());
 }
 
 #[test]

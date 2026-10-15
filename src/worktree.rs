@@ -1374,19 +1374,9 @@ pub fn create_branch(
     name: Option<&str>,
     shell_path_file: Option<&Path>,
 ) -> Result<PathBuf> {
-    let base_path = WorktreeInfo::list(repo)?
-        .into_iter()
-        .find(|entry| entry.branch.as_deref() == Some(&repo.base_branch))
-        .map(|entry| entry.path)
-        .context("base branch is not checked out in a worktree")?;
-    if !git_text(&base_path, &["status", "--porcelain"])?.is_empty() {
-        bail!("base worktree is dirty: {}", base_path.display());
-    }
     git_text(&repo.primary_root, &["fetch", "origin"])?;
-    git_text(
-        &base_path,
-        &["pull", "--ff-only", "origin", &repo.base_branch],
-    )?;
+    // Branch from origin so local base changes and commits are never touched.
+    let base = format!("refs/remotes/origin/{}", repo.base_branch);
 
     let generated;
     let name = if let Some(name) = name {
@@ -1414,18 +1404,19 @@ pub fn create_branch(
     let target_text = target.to_str().context("worktree path is not UTF-8")?;
     let herdr = Herdr::active(&repo.primary_root)?;
     if let Some(herdr) = &herdr {
-        herdr.create(&repo.primary_root, name, &repo.base_branch, &target)?;
+        herdr.create(&repo.primary_root, name, &base, &target)?;
     } else {
         git_text(
             &repo.primary_root,
             &[
                 "worktree",
                 "add",
+                "--no-track",
                 "-b",
                 name,
                 "--",
                 target_text,
-                &repo.base_branch,
+                &base,
             ],
         )?;
     }

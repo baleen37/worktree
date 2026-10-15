@@ -18,7 +18,7 @@ wt
 wt list
 ```
 
-`wt` with no arguments opens a picker for existing worktrees. `wt switch -c` fetches `origin`, fast-forwards the clean local `main` or `master` worktree, and creates the branch under `.worktrees/`. To remove the clean feature worktree later, switch to it and run `wt remove`; an unmerged branch is kept, while a merged branch is deleted.
+`wt` with no arguments opens a picker for existing worktrees. `wt switch -c` fetches `origin` and creates the branch from `origin/main` or `origin/master` under `.worktrees/`, leaving the local `main` or `master` worktree untouched. To remove the clean feature worktree later, switch to it and run `wt remove`; an unmerged branch is kept, while a merged branch is deleted.
 
 Shell integration lets `wt switch` and `wt remove` change the calling shell's directory. Without it, `wt switch` prints the selected path. `wt config shell install` adds startup blocks for zsh, bash, and fish.
 
