@@ -31,7 +31,7 @@ Discovery: full
 | 명령 | Herdr 활성 상태 | 기존 동작 유지 |
 | --- | --- | --- |
 | `wt switch <branch>` | 등록된 경로는 `herdr worktree open --focus`; 미등록 경로는 `.worktrees` 아래에 만든 뒤 `herdr worktree create --path ... --focus` | Git branch 확인, remote tracking, 출력 경로 및 shell 경로 변경 |
-| `wt switch -c <branch>` | `.worktrees` 경로를 넘겨 `herdr worktree create --focus` | fetch, base fast-forward, dirty base 거부, 브랜치 생성 규칙 |
+| `wt switch -c <branch>` | `.worktrees` 경로를 넘겨 `herdr worktree create --focus` | fetch, `origin/<base>`에서 브랜치 생성(로컬 base worktree는 건드리지 않음), 브랜치 생성 규칙 |
 | `wt remove` | 대상에 열린 Herdr workspace ID가 있으면 `herdr worktree remove --workspace <id>` 사용 | dirty, primary, base worktree 보호 및 기존 merged branch 삭제 조건 |
 | `wt merge` | 기존 Git merge 성공 뒤 Herdr로 source checkout을 제거하고 target에 포커스 | source와 target의 working tree 변경 없음 확인, 일반 Git merge, merge 성공 뒤 source branch 삭제 |
 | `wt prune` | 확인 및 매 삭제 전 재평가 뒤 열린 Herdr child는 Herdr로 제거하고 나머지는 Git으로 제거; 완료 후 호출자의 경로에 포커스 | 기본 3일 기준, `--all`, branch 보존, 비대화형 미리보기 |

@@ -1180,7 +1180,7 @@ fn active_herdr_resolves_linked_workspace_and_creates_with_exact_arguments() {
         [
             "herdr <worktree> <list> <--workspace> <linked-id>",
             &format!(
-                "herdr <worktree> <create> <--workspace> <source-id> <--branch> <feature/new> <--base> <main> <--path> <{}> <--focus>",
+                "herdr <worktree> <create> <--workspace> <source-id> <--branch> <feature/new> <--base> <refs/remotes/origin/main> <--path> <{}> <--focus>",
                 target.display()
             ),
             "nix <--extra-experimental-features> <nix-command> <store> <gc>",
@@ -1260,7 +1260,7 @@ fn active_herdr_switch_paths_leave_shell_path_file_empty() {
     );
     assert_eq!(fs::read_to_string(&shell_path_file).unwrap(), "");
     assert!(tools.lines().iter().any(|line| line == &format!(
-        "herdr <worktree> <create> <--workspace> <source-id> <--branch> <feature/new> <--base> <main> <--path> <{}> <--focus>",
+        "herdr <worktree> <create> <--workspace> <source-id> <--branch> <feature/new> <--base> <refs/remotes/origin/main> <--path> <{}> <--focus>",
         repo.primary.join(".worktrees/feature-new").display()
     )));
 
