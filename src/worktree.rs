@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
@@ -266,8 +267,6 @@ struct Progress {
     shown: bool,
     last: Instant,
     frame: usize,
-    dirs: usize,
-    root: PathBuf,
 }
 
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -280,8 +279,6 @@ impl Progress {
             shown: false,
             last: Instant::now(),
             frame: 0,
-            dirs: 0,
-            root: PathBuf::new(),
         }
     }
 
@@ -347,71 +344,190 @@ impl Drop for Progress {
     }
 }
 
-fn collect_git_roots(
-    directory: &Path,
-    roots: &mut Vec<PathBuf>,
-    skipped: &mut Vec<PathBuf>,
-    progress: &mut Progress,
-) -> Result<()> {
-    progress.dirs += 1;
-    let dirs = progress.dirs;
-    let place = relative_display(directory, &progress.root);
-    progress.tick(|| {
-        format!(
-            "scanning  {} dirs · {} repos  {}",
-            group_digits(dirs),
-            roots.len(),
-            Style::new().dim().apply_to(place)
-        )
-    });
-    let marker = directory.join(".git");
-    match std::fs::symlink_metadata(&marker) {
+/// What one directory contributes to the scan.
+#[derive(Default)]
+struct Visit {
+    root: Option<PathBuf>,
+    skipped: Option<PathBuf>,
+    warning: Option<String>,
+    children: Vec<PathBuf>,
+}
+
+fn visit_directory(directory: &Path) -> Visit {
+    let mut visit = Visit::default();
+    match std::fs::symlink_metadata(directory.join(".git")) {
         Ok(metadata) if !metadata.file_type().is_symlink() => {
-            if metadata.is_file() && has_missing_gitdir_target(directory)? {
-                progress.warn(&format!(
-                    "skipping stale Git worktree marker at {}: gitdir target does not exist",
-                    directory.display()
-                ));
-            } else {
-                roots.push(directory.to_owned());
+            match metadata
+                .is_file()
+                .then(|| has_missing_gitdir_target(directory))
+            {
+                Some(Ok(true)) => {
+                    visit.warning = Some(format!(
+                        "skipping stale Git worktree marker at {}: gitdir target does not exist",
+                        directory.display()
+                    ));
+                }
+                Some(Err(error)) => {
+                    visit.warning = Some(format!("skipping {}: {error:#}", directory.display()));
+                }
+                _ => visit.root = Some(directory.to_owned()),
             }
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            skipped.push(directory.to_owned());
-            return Ok(());
-        }
-        Err(error) => {
-            return Err(error).with_context(|| format!("could not inspect {}", marker.display()));
+        Err(_) => {
+            visit.skipped = Some(directory.to_owned());
+            return visit;
         }
     }
 
-    let entries = match std::fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            skipped.push(directory.to_owned());
-            return Ok(());
-        }
-        Err(error) => {
-            return Err(error).with_context(|| format!("could not scan {}", directory.display()));
-        }
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        visit.skipped = Some(directory.to_owned());
+        return visit;
     };
-    let mut children = entries
-        .collect::<std::io::Result<Vec<_>>>()
-        .with_context(|| format!("could not scan {}", directory.display()))?;
-    children.sort_by_key(std::fs::DirEntry::path);
-    for child in children {
-        let path = child.path();
-        let file_type = child
-            .file_type()
-            .with_context(|| format!("could not inspect {}", path.display()))?;
-        if !file_type.is_dir() || file_type.is_symlink() || child.file_name() == ".git" {
+    for entry in entries {
+        let Ok(child) = entry else {
+            visit.skipped = Some(directory.to_owned());
             continue;
+        };
+        let Ok(file_type) = child.file_type() else {
+            visit.skipped = Some(child.path());
+            continue;
+        };
+        if file_type.is_dir() && !file_type.is_symlink() && child.file_name() != ".git" {
+            visit.children.push(child.path());
         }
-        collect_git_roots(&path, roots, skipped, progress)?;
     }
-    Ok(())
+    visit
+}
+
+/// Walks `root` on all cores; unreadable directories are reported instead of failing the scan.
+fn collect_git_roots(
+    root: &Path,
+    progress: &mut Progress,
+) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<String>) {
+    // Pending directories and the number of workers still visiting one.
+    let queue = Mutex::new((vec![root.to_owned()], 0usize));
+    let ready = Condvar::new();
+    let dirs = AtomicUsize::new(0);
+    let repos = AtomicUsize::new(0);
+    let place = Mutex::new(root.to_owned());
+    let threads = std::thread::available_parallelism().map_or(4, usize::from);
+    let (mut roots, mut skipped, mut warnings) = (Vec::new(), Vec::new(), Vec::new());
+    std::thread::scope(|scope| {
+        let workers = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let (mut roots, mut skipped, mut warnings) =
+                        (Vec::new(), Vec::new(), Vec::new());
+                    loop {
+                        let directory = {
+                            let mut state = queue.lock().unwrap();
+                            loop {
+                                if let Some(directory) = state.0.pop() {
+                                    state.1 += 1;
+                                    break Some(directory);
+                                }
+                                if state.1 == 0 {
+                                    break None;
+                                }
+                                state = ready.wait(state).unwrap();
+                            }
+                        };
+                        let Some(directory) = directory else {
+                            ready.notify_all();
+                            return (roots, skipped, warnings);
+                        };
+                        let visit = visit_directory(&directory);
+                        dirs.fetch_add(1, Ordering::Relaxed);
+                        if let Ok(mut place) = place.try_lock() {
+                            *place = directory;
+                        }
+                        if let Some(root) = visit.root {
+                            repos.fetch_add(1, Ordering::Relaxed);
+                            roots.push(root);
+                        }
+                        skipped.extend(visit.skipped);
+                        warnings.extend(visit.warning);
+                        let mut state = queue.lock().unwrap();
+                        state.0.extend(visit.children);
+                        state.1 -= 1;
+                        ready.notify_all();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        while !workers.iter().all(|worker| worker.is_finished()) {
+            progress.tick(|| {
+                format!(
+                    "scanning  {} dirs · {} repos  {}",
+                    group_digits(dirs.load(Ordering::Relaxed)),
+                    repos.load(Ordering::Relaxed),
+                    Style::new()
+                        .dim()
+                        .apply_to(relative_display(&place.lock().unwrap(), root))
+                )
+            });
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        for worker in workers {
+            let (found, unreadable, warned) = worker
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            roots.extend(found);
+            skipped.extend(unreadable);
+            warnings.extend(warned);
+        }
+    });
+    roots.sort();
+    skipped.sort();
+    warnings.sort();
+    (roots, skipped, warnings)
+}
+
+/// Maps `items` on all cores while the calling thread keeps `progress` moving.
+fn parallel_map<T: Sync, R: Send>(
+    items: &[T],
+    progress: &mut Progress,
+    message: impl Fn(usize) -> String,
+    work: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism()
+        .map_or(4, usize::from)
+        .min(items.len().max(1));
+    std::thread::scope(|scope| {
+        let workers = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut results = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(item) = items.get(index) else {
+                            return results;
+                        };
+                        results.push((index, work(item)));
+                        done.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        while !workers.iter().all(|worker| worker.is_finished()) {
+            progress.tick(|| message(done.load(Ordering::Relaxed)));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut results = workers
+            .into_iter()
+            .flat_map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect::<Vec<_>>();
+        results.sort_by_key(|(index, _)| *index);
+        results.into_iter().map(|(_, result)| result).collect()
+    })
 }
 
 fn parse_worktree_list(text: &str, command_root: &Path) -> Result<Vec<RegisteredWorktree>> {
@@ -499,54 +615,107 @@ fn current_repository(directory: &Path) -> Result<Option<(PathBuf, PathBuf)>> {
     Ok(None)
 }
 
+fn common_dir(command_root: &Path) -> Result<PathBuf> {
+    PathBuf::from(git_text(
+        command_root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?)
+    .canonicalize()
+    .with_context(|| {
+        format!(
+            "could not resolve Git metadata for {}",
+            command_root.display()
+        )
+    })
+}
+
+fn read_repository(command_root: &Path, common_dir: PathBuf) -> Result<PruneRepository> {
+    let listing = git_text(command_root, &["worktree", "list", "--porcelain", "-z"])
+        .with_context(|| format!("could not list worktrees for {}", command_root.display()))?;
+    let worktrees = parse_worktree_list(&listing, command_root).with_context(|| {
+        format!(
+            "could not read worktree registrations for {}",
+            command_root.display()
+        )
+    })?;
+    let primary_root = worktrees
+        .first()
+        .context("Git reported no worktrees")?
+        .path
+        .clone();
+    Ok(PruneRepository {
+        common_dir,
+        primary_root,
+        worktrees,
+    })
+}
+
+/// Repositories under `root`, plus unreadable directories and Git checkouts that failed
+/// to load. Failures are warned about and skipped rather than aborting the scan.
 fn scan_repositories(
     root: &Path,
     progress: &mut Progress,
-) -> Result<(Vec<PruneRepository>, Vec<PathBuf>)> {
-    let mut roots = Vec::new();
-    let mut skipped = Vec::new();
-    collect_git_roots(root, &mut roots, &mut skipped, progress)?;
-    roots.sort();
+) -> (Vec<PruneRepository>, Vec<PathBuf>, Vec<PathBuf>) {
+    let (roots, skipped, mut warnings) = collect_git_roots(root, progress);
 
-    let mut seen = BTreeSet::new();
-    let mut repositories = Vec::new();
     let total = roots.len();
-    for (index, command_root) in roots.into_iter().enumerate() {
-        progress.tick(|| format!("reading   {}/{total} repos", index + 1));
-        let common_dir = PathBuf::from(git_text(
-            &command_root,
-            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        )?)
-        .canonicalize()
-        .with_context(|| {
-            format!(
-                "could not resolve Git metadata for {}",
-                command_root.display()
-            )
-        })?;
-        if !seen.insert(common_dir.clone()) {
-            continue;
+    let common_dirs = parallel_map(
+        &roots,
+        progress,
+        |done| format!("reading   {done}/{total} repos"),
+        |command_root| common_dir(command_root),
+    );
+    let mut failed = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut unique = Vec::new();
+    for (command_root, common_dir) in roots.into_iter().zip(common_dirs) {
+        match common_dir {
+            Ok(common_dir) => {
+                if seen.insert(common_dir.clone()) {
+                    unique.push((command_root, common_dir));
+                }
+            }
+            Err(error) => {
+                warnings.push(format!("skipping {}: {error:#}", command_root.display()));
+                failed.push(command_root);
+            }
         }
-        let listing = git_text(&command_root, &["worktree", "list", "--porcelain", "-z"])
-            .with_context(|| format!("could not list worktrees for {}", command_root.display()))?;
-        let worktrees = parse_worktree_list(&listing, &command_root).with_context(|| {
-            format!(
-                "could not read worktree registrations for {}",
-                command_root.display()
-            )
-        })?;
-        let primary_root = worktrees
-            .first()
-            .context("Git reported no worktrees")?
-            .path
-            .clone();
-        repositories.push(PruneRepository {
-            common_dir,
-            primary_root,
-            worktrees,
-        });
     }
-    Ok((repositories, skipped))
+
+    let total = unique.len();
+    let loaded = parallel_map(
+        &unique,
+        progress,
+        |done| format!("reading   {done}/{total} repos"),
+        |(command_root, common_dir)| read_repository(command_root, common_dir.clone()),
+    );
+    let mut repositories = Vec::new();
+    for ((command_root, _), repository) in unique.into_iter().zip(loaded) {
+        match repository {
+            Ok(repository) => repositories.push(repository),
+            Err(error) => {
+                warnings.push(format!("skipping {}: {error:#}", command_root.display()));
+                failed.push(command_root);
+            }
+        }
+    }
+    warn_capped(progress, &warnings);
+    (repositories, skipped, failed)
+}
+
+/// Prints the first few warnings in full and only counts the rest, so a scan of a large
+/// directory does not flood the terminal.
+fn warn_capped(progress: &mut Progress, warnings: &[String]) {
+    const SHOWN: usize = 3;
+    for warning in warnings.iter().take(SHOWN) {
+        progress.warn(warning);
+    }
+    if warnings.len() > SHOWN {
+        progress.warn(&format!(
+            "skipped {} more broken Git checkouts",
+            warnings.len() - SHOWN
+        ));
+    }
 }
 
 fn worktree_in_scope(path: &Path, root: &Path) -> Result<Option<PathBuf>> {
@@ -739,41 +908,68 @@ fn plan_prune(root: &Path, options: &PruneOptions, progress: &mut Progress) -> R
     let root = root
         .canonicalize()
         .with_context(|| format!("could not resolve scan directory {}", root.display()))?;
-    progress.root = root.clone();
-    progress.dirs = 0;
-    let (repositories, skipped) = scan_repositories(&root, progress)?;
-    let current_repository = current_repository(&root)?;
-    let total = repositories
-        .iter()
-        .map(|repository| repository.worktrees.len())
-        .sum::<usize>();
+    let (repositories, skipped, mut failed) = scan_repositories(&root, progress);
+    let current_repository = current_repository(&root).unwrap_or_else(|error| {
+        progress.warn(&format!(
+            "could not resolve the current repository: {error:#}"
+        ));
+        None
+    });
     let open = if options.all {
         Vec::new()
     } else {
         open_directories(progress)
     };
-    let now = SystemTime::now();
-    let mut entries = Vec::new();
-    for repository in &repositories {
-        let finished = if options.all {
-            BTreeSet::new()
-        } else {
-            let branches = repository
+    let total = repositories.len();
+    let finished = if options.all {
+        vec![BTreeSet::new(); total]
+    } else {
+        parallel_map(
+            &repositories,
+            progress,
+            |done| format!("checking  {done}/{total} repos"),
+            |repository| {
+                let branches = repository
+                    .worktrees
+                    .iter()
+                    .filter_map(|worktree| worktree.branch.as_deref())
+                    .collect::<Vec<_>>();
+                finished_branches(&repository.common_dir, &branches)
+            },
+        )
+        .into_iter()
+        .zip(&repositories)
+        .map(|(finished, repository)| {
+            // Without merge information the idle check alone decides.
+            finished.unwrap_or_else(|error| {
+                progress.warn(&format!(
+                    "could not check merged branches for {}: {error:#}",
+                    repository.primary_root.display()
+                ));
+                BTreeSet::new()
+            })
+        })
+        .collect()
+    };
+    let worktrees = repositories
+        .iter()
+        .zip(&finished)
+        .flat_map(|(repository, finished)| {
+            repository
                 .worktrees
                 .iter()
-                .filter_map(|worktree| worktree.branch.as_deref())
-                .collect::<Vec<_>>();
-            finished_branches(&repository.common_dir, &branches).with_context(|| {
-                format!(
-                    "could not check merged branches for {}",
-                    repository.primary_root.display()
-                )
-            })?
-        };
-        for worktree in &repository.worktrees {
-            progress.tick(|| format!("checking  {}/{total} worktrees", entries.len() + 1));
+                .map(move |worktree| (repository, finished, worktree))
+        })
+        .collect::<Vec<_>>();
+    let total = worktrees.len();
+    let now = SystemTime::now();
+    let checked = parallel_map(
+        &worktrees,
+        progress,
+        |done| format!("checking  {done}/{total} worktrees"),
+        |(repository, finished, worktree)| -> Result<Option<(PruneCandidate, bool)>> {
             let Some(path) = worktree_in_scope(&worktree.path, &root)? else {
-                continue;
+                return Ok(None);
             };
             let is_scope_root = path == root;
             let mut can_remove = !worktree.is_primary
@@ -781,12 +977,12 @@ fn plan_prune(root: &Path, options: &PruneOptions, progress: &mut Progress) -> R
                 && (!worktree.is_locked || options.force >= 2);
             let mut reason = None;
             if can_remove && !options.all {
-                reason = unused_reason(worktree, &path, &finished, &open, now);
+                reason = unused_reason(worktree, &path, finished, &open, now);
                 can_remove = reason.is_some();
             }
             can_remove =
                 can_remove && (options.force > 0 || worktree_is_clean(&path) == Some(true));
-            entries.push((
+            Ok(Some((
                 PruneCandidate {
                     path,
                     common_dir: repository.common_dir.clone(),
@@ -794,7 +990,17 @@ fn plan_prune(root: &Path, options: &PruneOptions, progress: &mut Progress) -> R
                     reason,
                 },
                 can_remove,
-            ));
+            )))
+        },
+    );
+    let mut entries = Vec::new();
+    for ((_, _, worktree), entry) in worktrees.iter().zip(checked) {
+        match entry {
+            Ok(entry) => entries.extend(entry),
+            Err(error) => {
+                progress.warn(&format!("skipping {}: {error:#}", worktree.path.display()));
+                failed.push(worktree.path.clone());
+            }
         }
     }
 
@@ -805,7 +1011,10 @@ fn plan_prune(root: &Path, options: &PruneOptions, progress: &mut Progress) -> R
         let parent = &entries[index].0.path;
         if entries.iter().any(|(child, can_remove)| {
             child.path != *parent && child.path.starts_with(parent) && !can_remove
-        }) || skipped.iter().any(|path| path.starts_with(parent))
+        }) || skipped
+            .iter()
+            .chain(&failed)
+            .any(|path| path.starts_with(parent))
         {
             entries[index].1 = false;
         }
@@ -972,9 +1181,11 @@ pub fn prune(folder: &Path, options: PruneOptions) -> Result<PruneOutcome> {
         println!();
     }
 
-    // Re-scan after confirmation so failed discovery still happens before the first removal.
+    // Re-scan after an interactive confirmation to catch worktrees created while waiting.
     let planned_paths = outcome.candidates.iter().cloned().collect::<BTreeSet<_>>();
-    plan = plan_prune(folder, &options, &mut progress)?;
+    if !options.yes {
+        plan = plan_prune(folder, &options, &mut progress)?;
+    }
     let new_paths = plan
         .candidates
         .iter()

@@ -442,6 +442,24 @@ fn scan_does_not_follow_symbolic_links() {
 }
 
 #[test]
+fn invalid_git_file_is_skipped_with_warning() {
+    let repo = Repo::new();
+    let candidate = repo.add_candidate("feature/candidate");
+    let invalid_repo = repo.root.join("a-invalid");
+    std::fs::create_dir(&invalid_repo).unwrap();
+    std::fs::write(invalid_repo.join(".git"), "not a git directory\n").unwrap();
+
+    let output = repo.run(&["prune", "--all", "--yes"]);
+
+    assert_success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("warning: skipping"), "{stderr}");
+    assert!(stderr.contains("a-invalid"), "{stderr}");
+    assert!(invalid_repo.exists());
+    assert!(!candidate.exists());
+}
+
+#[test]
 fn unreadable_directory_outside_candidates_is_skipped_with_warning() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -491,7 +509,7 @@ fn candidate_containing_unreadable_directory_is_kept() {
 }
 
 #[test]
-fn worktree_registration_error_prevents_all_removals() {
+fn worktree_registration_error_skips_the_repository() {
     let repo = Repo::new();
     let candidate = repo.add_candidate("feature/candidate");
     let real_git = ProcessCommand::new("sh")
@@ -523,7 +541,7 @@ fn worktree_registration_error_prevents_all_removals() {
         .output()
         .unwrap();
 
-    assert!(!output.status.success());
+    assert_success(&output);
     assert!(String::from_utf8_lossy(&output.stderr).contains("injected-failure"));
     assert!(candidate.exists());
 }
