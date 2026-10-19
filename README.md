@@ -55,7 +55,12 @@ The shell installer targets macOS and Linux and does not support NixOS. Install 
 nix profile install github:baleen37/worktree/v0.1.10
 ```
 
-Home Manager configurations can install the flake package declaratively.
+Home Manager configurations can install the flake package declaratively. To use it as `pkgs.worktree`, add the flake's overlay to nixpkgs:
+
+```nix
+nixpkgs.overlays = [ inputs.worktree.overlays.default ];
+home.packages = [ pkgs.worktree ];
+```
 
 ### Manual archive installation
 
