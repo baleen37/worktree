@@ -18,17 +18,45 @@ wt
 wt list
 ```
 
-`wt` with no arguments opens a picker for existing worktrees. `wt switch -c` fetches `origin` and creates the branch from `origin/main` or `origin/master` under `.worktrees/`, leaving the local `main` or `master` worktree untouched. To remove the clean feature worktree later, switch to it and run `wt remove`; an unmerged branch is kept, while a merged branch is deleted.
+`wt` with no arguments opens a picker for existing worktrees. `wt switch -c` fetches `origin` and creates the branch from `origin/main` or `origin/master` under `.worktrees/` (slashes in the branch name become dashes in the directory name), leaving the local `main` or `master` worktree untouched. To remove the clean feature worktree later, run `wt remove` inside it, or pass a branch name or path from anywhere in the repository; an unmerged branch is kept, while a merged branch is deleted. The primary and `main`/`master` worktrees cannot be removed.
 
 Shell integration lets `wt switch` and `wt remove` change the calling shell's directory. Without it, `wt switch` prints the selected path. `wt config shell install` adds startup blocks for zsh, bash, and fish.
 
 In Herdr, `wt switch` opens and focuses the target workspace while leaving the calling shell in its current worktree.
 
+## Commands
+
+| Command | What it does | Example |
+| --- | --- | --- |
+| `wt` | Open a picker for existing worktrees | `wt` |
+| `wt switch <branch>` | Switch to a worktree, creating one from a local or fetched `origin` branch | `wt switch feature/search` |
+| `wt switch -c [<branch>]` | Fetch `origin` and create a new branch and worktree; without a name, `wt` picks a random one | `wt switch -c fix/typo` |
+| `wt list` | List worktrees with their branch and status | `wt list` |
+| `wt merge [<target>]` | Merge the current branch into the target worktree, then remove the source | `wt merge` |
+| `wt remove [<branch or path>]` | Remove a clean worktree, the current one by default | `wt remove feature/search` |
+| `wt prune` | Preview and remove unused worktrees under the current directory | `wt prune --yes` |
+| `wt config shell install` | Add shell integration to zsh, bash, and fish startup files | `wt config shell install` |
+
+Run `wt <command> --help` for every option.
+
+## Shell integration
+
+`wt config shell install` adds a managed block to `~/.zshrc`, `~/.bashrc`, and `$XDG_CONFIG_HOME/fish/config.fish` (default `~/.config/fish/config.fish`). `wt config shell uninstall` removes those blocks.
+
+To manage your startup files yourself, add the wrapper for your shell instead:
+
+```sh
+# zsh (~/.zshrc)
+eval "$(wt config shell init zsh)"
+# bash (~/.bashrc)
+eval "$(wt config shell init bash)"
+# fish (~/.config/fish/config.fish)
+wt config shell init fish | source
+```
+
 ## Install
 
 ### Cargo
-
-After `worktree-cli` v0.1.10 is published to crates.io:
 
 ```sh
 cargo install worktree-cli --version 0.1.10 --locked
@@ -36,7 +64,7 @@ cargo install worktree-cli --version 0.1.10 --locked
 
 ### macOS and Linux
 
-After the `v0.1.10` GitHub Release is published, install that pinned version with the cargo-dist shell installer:
+Install the pinned `v0.1.10` GitHub Release with the cargo-dist shell installer:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
