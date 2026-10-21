@@ -1497,29 +1497,33 @@ fn set_origin_upstream(worktree: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// Returns the start point for a local or cached origin branch, and whether it is remote.
+fn resolve_existing(repo: &RepoContext, branch: &str) -> Option<(String, bool)> {
+    let ref_exists =
+        |r: &str| git_text(&repo.primary_root, &["show-ref", "--verify", "--quiet", r]).is_ok();
+    if ref_exists(&format!("refs/heads/{branch}")) {
+        return Some((branch.to_owned(), false));
+    }
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    ref_exists(&remote_ref).then_some((remote_ref, true))
+}
+
 pub fn switch_existing(
     repo: &RepoContext,
     branch: &str,
     shell_path_file: Option<&Path>,
 ) -> Result<PathBuf> {
-    let branch_ref = format!("refs/heads/{branch}");
-    let (start_point, is_remote_branch) = if git_text(
-        &repo.primary_root,
-        &["show-ref", "--verify", "--quiet", &branch_ref],
-    )
-    .is_ok()
-    {
-        (branch.to_owned(), false)
-    } else {
-        let remote_ref = format!("refs/remotes/origin/{branch}");
-        git_text(
-            &repo.primary_root,
-            &["show-ref", "--verify", "--quiet", &remote_ref],
-        )
-        .map_err(|_| anyhow::anyhow!("unknown local branch or cached origin branch: {branch}"))?;
-        (remote_ref, true)
-    };
+    let resolved = resolve_existing(repo, branch)
+        .ok_or_else(|| anyhow::anyhow!("unknown local branch or cached origin branch: {branch}"))?;
+    switch_resolved(repo, branch, resolved, shell_path_file)
+}
 
+fn switch_resolved(
+    repo: &RepoContext,
+    branch: &str,
+    (start_point, is_remote_branch): (String, bool),
+    shell_path_file: Option<&Path>,
+) -> Result<PathBuf> {
     if let Some(entry) = WorktreeInfo::list(repo)?
         .into_iter()
         .find(|entry| entry.branch.as_deref() == Some(branch))
@@ -1578,6 +1582,18 @@ pub fn switch_existing(
         write_path(shell_path_file, &target)?;
     }
     Ok(target)
+}
+
+/// Switches to an existing local or cached origin branch, or creates it from the origin base.
+pub fn switch_or_create(
+    repo: &RepoContext,
+    branch: &str,
+    shell_path_file: Option<&Path>,
+) -> Result<PathBuf> {
+    match resolve_existing(repo, branch) {
+        Some(resolved) => switch_resolved(repo, branch, resolved, shell_path_file),
+        None => create_branch(repo, Some(branch), shell_path_file),
+    }
 }
 
 pub fn create_branch(
