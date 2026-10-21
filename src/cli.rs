@@ -6,7 +6,7 @@ use crate::picker;
 use crate::shell::{self, Shell};
 use crate::worktree::{
     PruneOptions, WorktreeInfo, create_branch, merge, prune, remove, switch_existing,
-    worktree_labels,
+    switch_or_create, worktree_labels,
 };
 
 #[derive(Debug, Parser)]
@@ -52,6 +52,9 @@ enum Commands {
         #[command(subcommand)]
         command: ConfigCommands,
     },
+    /// `wt <branch>`: switch to a branch's worktree, creating the branch from origin's base if needed.
+    #[command(external_subcommand)]
+    Branch(Vec<String>),
 }
 
 #[derive(Debug, Subcommand)]
@@ -150,6 +153,18 @@ pub fn run() -> anyhow::Result<()> {
                 eprintln!("warning: --stale is deprecated; it is now the default behavior");
             }
             prune(&folder, PruneOptions { all, force, yes })?;
+        }
+        Commands::Branch(args) => {
+            let [branch] = args.as_slice() else {
+                anyhow::bail!("usage: wt <branch>");
+            };
+            let repo = RepoContext::discover(&std::env::current_dir()?)?;
+            let shell_path_file =
+                std::env::var_os("WT_SHELL_PATH_FILE").map(std::path::PathBuf::from);
+            let path = switch_or_create(&repo, branch, shell_path_file.as_deref())?;
+            if shell_path_file.is_none() {
+                println!("{}", path.display());
+            }
         }
         Commands::Config { command } => match command {
             ConfigCommands::Shell { command } => match command {

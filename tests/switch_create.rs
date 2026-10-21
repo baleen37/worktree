@@ -289,3 +289,60 @@ fn omitted_name_creates_legacy_three_word_branch() {
     assert_eq!(target, repo.primary.join(".worktrees").join(&name));
     assert_eq!(git_text(&target, &["rev-parse", "HEAD"]), remote_head);
 }
+
+#[test]
+fn bare_branch_creates_new_branch_from_origin_base() {
+    let repo = Repo::new("main");
+    let remote_head = repo.remote_commit();
+    let target = repo.primary.join(".worktrees/feature-new");
+
+    repo.wt
+        .command()
+        .current_dir(&repo.linked)
+        .arg("feature/new")
+        .env_remove("WT_SHELL_PATH_FILE")
+        .assert()
+        .success()
+        .stdout(format!("{}\n", target.display()));
+
+    assert_eq!(git_text(&target, &["rev-parse", "HEAD"]), remote_head);
+    assert_eq!(
+        git_text(&target, &["branch", "--show-current"]),
+        "feature/new"
+    );
+}
+
+#[test]
+fn bare_branch_switches_to_existing_worktree() {
+    let repo = Repo::new("main");
+
+    repo.wt
+        .command()
+        .current_dir(&repo.primary)
+        .arg("feature/list")
+        .env_remove("WT_SHELL_PATH_FILE")
+        .assert()
+        .success()
+        .stdout(format!("{}\n", repo.linked.display()));
+}
+
+#[test]
+fn bare_branch_uses_origin_branch_published_since_last_fetch() {
+    let repo = Repo::new("main");
+    git(&repo.writer, &["checkout", "-b", "feature/remote"]);
+    let remote_head = repo.remote_commit();
+    let target = repo.primary.join(".worktrees/feature-remote");
+
+    repo.wt
+        .command()
+        .current_dir(&repo.primary)
+        .arg("feature/remote")
+        .assert()
+        .success();
+
+    assert_eq!(git_text(&target, &["rev-parse", "HEAD"]), remote_head);
+    assert_eq!(
+        git_text(&target, &["rev-parse", "--abbrev-ref", "@{upstream}"]),
+        "origin/feature/remote"
+    );
+}

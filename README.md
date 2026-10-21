@@ -29,6 +29,7 @@ In Herdr, `wt switch` opens and focuses the target workspace while leaving the c
 | Command | What it does | Example |
 | --- | --- | --- |
 | `wt` | Open a picker for existing worktrees | `wt` |
+| `wt <branch>` | Create a worktree for the branch; a new branch starts from `origin/main` or `origin/master`, an existing one is switched to | `wt feature/search` |
 | `wt switch <branch>` | Switch to a worktree, creating one from a local or fetched `origin` branch | `wt switch feature/search` |
 | `wt switch -c [<branch>]` | Fetch `origin` and create a new branch and worktree; without a name, `wt` picks a random one | `wt switch -c fix/typo` |
 | `wt list` | List worktrees with their branch and status | `wt list` |
