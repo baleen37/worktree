@@ -325,3 +325,24 @@ fn bare_branch_switches_to_existing_worktree() {
         .success()
         .stdout(format!("{}\n", repo.linked.display()));
 }
+
+#[test]
+fn bare_branch_uses_origin_branch_published_since_last_fetch() {
+    let repo = Repo::new("main");
+    git(&repo.writer, &["checkout", "-b", "feature/remote"]);
+    let remote_head = repo.remote_commit();
+    let target = repo.primary.join(".worktrees/feature-remote");
+
+    repo.wt
+        .command()
+        .current_dir(&repo.primary)
+        .arg("feature/remote")
+        .assert()
+        .success();
+
+    assert_eq!(git_text(&target, &["rev-parse", "HEAD"]), remote_head);
+    assert_eq!(
+        git_text(&target, &["rev-parse", "--abbrev-ref", "@{upstream}"]),
+        "origin/feature/remote"
+    );
+}

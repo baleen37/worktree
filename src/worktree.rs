@@ -1590,9 +1590,14 @@ pub fn switch_or_create(
     branch: &str,
     shell_path_file: Option<&Path>,
 ) -> Result<PathBuf> {
+    if let Some(resolved) = resolve_existing(repo, branch) {
+        return switch_resolved(repo, branch, resolved, shell_path_file);
+    }
+    // The branch may have been published to origin since the last fetch.
+    git_text(&repo.primary_root, &["fetch", "origin"])?;
     match resolve_existing(repo, branch) {
         Some(resolved) => switch_resolved(repo, branch, resolved, shell_path_file),
-        None => create_branch(repo, Some(branch), shell_path_file),
+        None => create_fetched_branch(repo, Some(branch), shell_path_file),
     }
 }
 
@@ -1602,6 +1607,14 @@ pub fn create_branch(
     shell_path_file: Option<&Path>,
 ) -> Result<PathBuf> {
     git_text(&repo.primary_root, &["fetch", "origin"])?;
+    create_fetched_branch(repo, name, shell_path_file)
+}
+
+fn create_fetched_branch(
+    repo: &RepoContext,
+    name: Option<&str>,
+    shell_path_file: Option<&Path>,
+) -> Result<PathBuf> {
     // Branch from origin so local base changes and commits are never touched.
     let base = format!("refs/remotes/origin/{}", repo.base_branch);
 
