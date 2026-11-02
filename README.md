@@ -35,7 +35,7 @@ In Herdr, `wt switch` opens and focuses the target workspace while leaving the c
 | `wt list` | List worktrees with their branch and status | `wt list` |
 | `wt merge [<target>]` | Merge the current branch into the target worktree, then remove the source | `wt merge` |
 | `wt remove [<branch or path>]` | Remove a clean worktree, the current one by default | `wt remove feature/search` |
-| `wt prune` | Preview and remove unused worktrees under the current directory | `wt prune --yes` |
+| `wt prune` | Preview and remove unused worktrees under the current directory | `wt prune -y -f` |
 | `wt config shell install` | Add shell integration to zsh, bash, and fish startup files | `wt config shell install` |
 
 Run `wt <command> --help` for every option.
@@ -134,7 +134,7 @@ Run `wt merge` from a feature worktree to merge it into the local `main` or `mas
 
 `wt prune` scans the current directory and its subdirectories, including hidden directories, without following symbolic links. It can run outside a Git repository and finds linked worktrees registered by any repository under that folder. The primary checkout, the worktree at the scan root, and paths outside the folder are kept. By default it removes only unused clean linked worktrees: the branch is merged into local `main`/`master` after gaining its own commits, or its upstream is gone, or the worktree has had no commit or Git activity for three days. Worktrees that a running process (a shell or editor) has open are kept. Pass `--all` to include every clean linked worktree regardless of merge status, age, or open processes. Dirty worktrees and worktrees whose status cannot be read are kept.
 
-A terminal run asks before removal; a non-interactive run previews only. Pass `--yes` to remove without prompting. Use `-f` or `--force` to include dirty worktrees among the selected ones (`--all --force` removes every linked worktree). Repeat the force option (`-ff` or `--force --force`) to remove Git-locked worktrees. Branch references are kept, and nested worktrees are removed from child to parent. When run from an active Herdr workspace, Herdr synchronization applies only to that repository.
+A terminal run asks before removal; a non-interactive run previews only. Pass `-y` or `--yes` to remove without prompting. Use `-f` or `--force` to include in-use, dirty, and Git-locked worktrees without needing `--all`. For example, `wt prune -y -f` removes all eligible linked worktrees without prompting. Force alone still requires confirmation in a terminal and only previews in a non-interactive run. Repeated force options (`-ff` or `--force --force`) remain supported. Branch references are kept, and nested worktrees are removed from child to parent. When run from an active Herdr workspace, Herdr synchronization applies only to that repository.
 
 `--stale` remains as a deprecated alias for the default cleanup and prints a warning.
 

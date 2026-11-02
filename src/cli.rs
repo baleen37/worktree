@@ -37,14 +37,14 @@ enum Commands {
         /// Deprecated alias for the default cleanup.
         #[arg(long)]
         stale: bool,
-        /// Include worktrees that look in use (unmerged, recently active, or open).
+        /// Include all clean worktrees, even if unmerged, recently active, or open.
         #[arg(long)]
         all: bool,
-        /// Force-remove dirty worktrees; repeat to remove locked worktrees.
+        /// Include in-use, dirty, and Git-locked worktrees.
         #[arg(short = 'f', long, action = ArgAction::Count)]
         force: u8,
-        /// Remove without confirmation.
-        #[arg(long)]
+        /// Remove without confirmation (for example: wt prune -y -f).
+        #[arg(short = 'y', long)]
         yes: bool,
     },
     /// Manage shell integration.

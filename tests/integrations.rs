@@ -67,8 +67,11 @@ if [ "$1 $2" = 'worktree remove' ]; then
   if [ -n "$WT_SESSION_LOG" ]; then printf '%s\n' "$PPID" >> "$WT_SESSION_LOG"; fi
   force=0
   for arg in "$@"; do
-    if [ "$arg" = "--force" ]; then force=1; fi
+    if [ "$arg" = "--force" ]; then force=$((force + 1)); fi
   done
+  if [ "$force" -ge 2 ]; then
+    exec "$WT_REAL_GIT" -C "$WT_PRIMARY" worktree remove --force --force -- "$WT_HERDR_REMOVE_PATH"
+  fi
   if [ "$force" = 1 ]; then
     exec "$WT_REAL_GIT" -C "$WT_PRIMARY" worktree remove --force -- "$WT_HERDR_REMOVE_PATH"
   fi
@@ -932,10 +935,14 @@ fn active_herdr_prune_force_removes_dirty_open_child_preserves_branch_and_focus(
         ],
     );
     fs::write(child.join("uncommitted.txt"), "discard this child\n").unwrap();
+    git(
+        &repo.primary,
+        &["worktree", "lock", child.to_str().unwrap()],
+    );
     let tools = FakeTools::new(true);
     let output = tools
         .command(&repo.primary)
-        .args(["prune", "--all", "--force", "--yes"])
+        .args(["prune", "-fy"])
         .env("HERDR_ENV", "1")
         .env("HERDR_WORKSPACE_ID", "source-id")
         .env(
@@ -954,12 +961,9 @@ fn active_herdr_prune_force_removes_dirty_open_child_preserves_branch_and_focus(
     assert!(!child.exists());
     assert!(branch_exists(&repo.primary, "feature/herdr-child"));
     assert!(!child.join("uncommitted.txt").exists());
-    assert!(
-        tools
-            .lines()
-            .iter()
-            .any(|line| line == "herdr <worktree> <remove> <--workspace> <child-id> <--force>")
-    );
+    assert!(tools.lines().iter().any(
+        |line| line == "herdr <worktree> <remove> <--workspace> <child-id> <--force> <--force>"
+    ));
     assert!(tools.lines().iter().any(|line| line
         == &format!(
             "herdr <worktree> <open> <--workspace> <source-id> <--path> <{}> <--focus>",
