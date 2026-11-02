@@ -184,7 +184,7 @@ fn prune_scans_multiple_repositories_from_a_non_git_directory_and_keeps_outside_
     let outside = root.join("outside worktree");
     first.worktree("feature/outside", &outside);
 
-    let output = first.run_from(&scope, &["prune", "--all", "--yes"]);
+    let output = first.run_from(&scope, &["prune", "-fy"]);
 
     assert_success(&output);
     let text = String::from_utf8(output.stdout).unwrap();
@@ -345,42 +345,68 @@ fn non_tty_previews_without_removing_and_stale_alias_runs_default_cleanup() {
 }
 
 #[test]
-fn dirty_worktrees_need_all_and_force_and_keep_the_branch() {
+fn force_includes_dirty_worktrees_and_keeps_the_branch() {
     let repo = Repo::new();
     let candidate = repo.add_candidate("feature/dirty");
     std::fs::write(candidate.join("untracked"), "discard\n").unwrap();
 
-    for options in [&["--force"][..], &["--all"][..]] {
-        let output = repo.run(&[&["prune", "--yes"][..], options].concat());
-        assert_success(&output);
-        assert!(candidate.exists(), "{options:?}");
-    }
+    let clean_only = repo.run(&["prune", "--all", "-y"]);
+    assert_success(&clean_only);
+    assert!(candidate.exists());
 
-    let output = repo.run(&["prune", "--all", "--force", "--yes"]);
+    let preview = repo.run(&["prune", "-f"]);
+    assert_success(&preview);
+    assert!(String::from_utf8_lossy(&preview.stdout).contains("dry run"));
+    assert!(candidate.exists());
 
+    let output = repo.run(&["prune", "-fy"]);
     assert_success(&output);
     assert!(!candidate.exists());
     assert!(branch_exists(&repo.primary, "feature/dirty"));
 }
 
 #[test]
-fn locked_worktree_requires_force_twice() {
+fn force_removes_locked_worktrees_and_accepts_repeated_force() {
+    for flags in [
+        ["-fy"].as_slice(),
+        ["-ff", "--yes"].as_slice(),
+        ["--force", "--yes"].as_slice(),
+    ] {
+        let repo = Repo::new();
+        let candidate = repo.add_candidate("feature/locked");
+        git(
+            &repo.primary,
+            &["worktree", "lock", candidate.to_str().unwrap()],
+        );
+        let normal = repo.run(&["prune", "--all", "-y"]);
+        assert_success(&normal);
+        assert!(candidate.exists());
+        let output = repo.run(&[&["prune"][..], flags].concat());
+        assert_success(&output);
+        assert!(!candidate.exists());
+        assert!(branch_exists(&repo.primary, "feature/locked"));
+    }
+}
+
+#[test]
+fn force_includes_recent_unmerged_and_open_worktrees() {
     let repo = Repo::new();
-    let candidate = repo.add_candidate("feature/locked");
-    git(
-        &repo.primary,
-        &["worktree", "lock", candidate.to_str().unwrap()],
-    );
-
-    let force_once = repo.run(&["prune", "--all", "-f", "--yes"]);
-    assert_success(&force_once);
-    assert!(candidate.exists());
-    assert!(String::from_utf8_lossy(&force_once.stdout).contains("keep 2 "));
-
-    let force_twice = repo.run(&["prune", "--all", "-ff", "--yes"]);
-    assert_success(&force_twice);
-    assert!(!candidate.exists());
-    assert!(branch_exists(&repo.primary, "feature/locked"));
+    let recent = repo.add_candidate("feature/recent");
+    let unmerged = repo.add_candidate("feature/unmerged");
+    unmerged_change(&unmerged, "change");
+    let mut shell = ProcessCommand::new("sleep")
+        .arg("30")
+        .current_dir(&recent)
+        .spawn()
+        .unwrap();
+    let output = repo.run(&["prune", "-fy"]);
+    shell.kill().unwrap();
+    shell.wait().unwrap();
+    assert_success(&output);
+    assert!(!recent.exists());
+    assert!(!unmerged.exists());
+    assert!(repo.primary.exists());
+    assert!(branch_exists(&repo.primary, "feature/unmerged"));
 }
 
 #[test]
@@ -397,7 +423,7 @@ fn nested_worktrees_are_removed_child_first_and_dirty_children_keep_the_parent()
     assert!(nested.exists());
     assert!(String::from_utf8_lossy(&normal.stdout).contains("nothing to remove"));
 
-    let forced = repo.run(&["prune", "--all", "--force", "--yes"]);
+    let forced = repo.run(&["prune", "-fy"]);
     assert_success(&forced);
     let text = String::from_utf8(forced.stdout).unwrap();
     let nested_removal = text.find(&listed(&repo.root, &nested)).unwrap();
@@ -589,7 +615,7 @@ fn invocation_worktree_is_kept() {
     let repo = Repo::new();
     let current = repo.add_candidate("feature/current");
 
-    let output = repo.run_from(&current, &["prune", "--all", "--force", "--yes"]);
+    let output = repo.run_from(&current, &["prune", "-fy"]);
 
     assert_success(&output);
     assert!(current.exists());
@@ -601,7 +627,7 @@ fn confirmation_accepts_y_and_cancel_preserves_candidates() {
     for (key, should_remove) in [("y", true), ("n", false)] {
         let repo = Repo::new();
         let candidate = repo.add_candidate("feature/candidate");
-        let mut session = repo.pty(&repo.root, &["prune", "--all"]);
+        let mut session = repo.pty(&repo.root, &["prune", "-f"]);
         session.expect("[y/N]").unwrap();
         session.send(key).unwrap();
         session.expect(Eof).unwrap();

@@ -915,13 +915,14 @@ fn plan_prune(root: &Path, options: &PruneOptions, progress: &mut Progress) -> R
         ));
         None
     });
-    let open = if options.all {
+    let include_in_use = options.all || options.force > 0;
+    let open = if include_in_use {
         Vec::new()
     } else {
         open_directories(progress)
     };
     let total = repositories.len();
-    let finished = if options.all {
+    let finished = if include_in_use {
         vec![BTreeSet::new(); total]
     } else {
         parallel_map(
@@ -974,9 +975,9 @@ fn plan_prune(root: &Path, options: &PruneOptions, progress: &mut Progress) -> R
             let is_scope_root = path == root;
             let mut can_remove = !worktree.is_primary
                 && !is_scope_root
-                && (!worktree.is_locked || options.force >= 2);
+                && (!worktree.is_locked || options.force > 0);
             let mut reason = None;
-            if can_remove && !options.all {
+            if can_remove && !include_in_use {
                 reason = unused_reason(worktree, &path, finished, &open, now);
                 can_remove = reason.is_some();
             }
@@ -1232,6 +1233,7 @@ pub fn prune(folder: &Path, options: PruneOptions) -> Result<PruneOutcome> {
         .current_repository
         .as_ref()
         .map(|(common_dir, _)| common_dir);
+    let force = if options.force > 0 { 2 } else { 0 };
     let mut herdr_repo_removed = false;
     let total = plan.candidates.len();
     for (index, candidate) in plan.candidates.iter().enumerate() {
@@ -1249,9 +1251,9 @@ pub fn prune(folder: &Path, options: PruneOptions) -> Result<PruneOutcome> {
             None
         };
         if let (Some(active_herdr), Some(workspace_id)) = (herdr.as_ref(), workspace_id) {
-            active_herdr.remove(&candidate.primary_root, workspace_id, options.force)?;
+            active_herdr.remove(&candidate.primary_root, workspace_id, force)?;
         } else {
-            remove_worktree(candidate, options.force)?;
+            remove_worktree(candidate, force)?;
         }
         herdr_repo_removed |= belongs_to_caller;
         outcome.removed.push(candidate.path.clone());

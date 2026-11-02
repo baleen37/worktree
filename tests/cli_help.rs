@@ -25,7 +25,9 @@ fn prune_help_describes_force_alias_and_locked_worktrees() {
         .success()
         .stdout(predicate::str::contains("--force"))
         .stdout(predicate::str::contains("--all"))
-        .stdout(predicate::str::contains("locked"));
+        .stdout(predicate::str::contains("locked"))
+        .stdout(predicate::str::contains("-y, --yes"))
+        .stdout(predicate::str::contains("wt prune -y -f"));
 }
 
 #[test]
